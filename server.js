@@ -116,6 +116,19 @@ function ensurePublicAssets() {
 
 ensurePublicAssets();
 
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+// Render/CDN 환경에서 ?v= 캐시버스트 쿼리가 404(text/plain)로 떨어지는 문제 방지
+app.use((req, res, next) => {
+  if (req.url.includes('?')) {
+    const clean = req.url.split('?')[0];
+    if (/\.(js|css|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|map)$/i.test(clean)) {
+      req.url = clean;
+    }
+  }
+  next();
+});
+
 app.get('/assets/roles/:role', (req, res, next) => {
   const role = req.params.role.replace(/\.(png|svg)$/i, '');
   const file = resolveRoleAsset(role);
@@ -134,7 +147,12 @@ app.use('/assets/ui', express.static(path.join(__dirname, 'assets', 'ui')));
 app.use('/assets/motions', express.static(path.join(__dirname, 'public', 'assets', 'motions')));
 app.use('/assets/roles', express.static(path.join(__dirname, 'public', 'assets', 'roles')));
 app.use('/assets/motions', express.static(path.join(__dirname, 'assets')));
-app.use(express.static('public'));
+app.use(express.static(PUBLIC_DIR, {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.js')) res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    else if (filePath.endsWith('.css')) res.setHeader('Content-Type', 'text/css; charset=utf-8');
+  }
+}));
 
 // ─── constants ───────────────────────────────────────────────────────────────
 
