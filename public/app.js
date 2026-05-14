@@ -309,8 +309,8 @@ function leaveRoom() {
   if (state && state.phase && !['none', 'lobby', 'game_over'].includes(state.phase)) {
     if (!window.confirm('게임 중입니다. 방을 나가면 로비로 돌아갑니다. 나가시겠습니까?')) return;
   }
-  localStorage.removeItem('mafia_roomCode');
   socket.emit('leaveRoom');
+  localStorage.removeItem('mafia_roomCode');
   showToast('방에서 나갔습니다.');
 }
 
@@ -1307,7 +1307,11 @@ socket.on('connect', () => {
   const nick = getNickname() || localStorage.getItem('mafia_nickname') || '';
   if (nick) $('#nickname').value = nick;
   const savedRoom = localStorage.getItem('mafia_roomCode');
-  socket.emit('join', { userID, nickname: nick || '플레이어', roomCode: savedRoom || null });
+  if (savedRoom) {
+    socket.emit('join', { userID, nickname: nick || '플레이어', roomCode: savedRoom });
+  } else if (nick) {
+    socket.emit('join', { userID, nickname: nick, roomCode: null });
+  }
 });
 
 socket.on('disconnect', () => {
@@ -1324,6 +1328,16 @@ socket.on('connect_error', () => {
 
 socket.on('sessionTaken', (data) => {
   showToast(data.message);
+  localStorage.removeItem('mafia_roomCode');
+  state = { phase: 'none', serverInfo: state && state.serverInfo ? state.serverInfo : null };
+  resetLobbyClientState();
+  renderFromState();
+});
+
+socket.on('joinResult', (data) => {
+  if (data && data.ok === false && data.reason === 'game_in_progress') {
+    showToast('방에 다시 연결할 수 없습니다. 새로고침 후 다시 시도하세요.');
+  }
 });
 
 socket.on('stateSync', (data) => {

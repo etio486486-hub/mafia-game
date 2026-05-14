@@ -709,7 +709,7 @@ function scheduleBotActions(room, durationMs) {
 
 function ensurePhaseTimer(room) {
   if (!room.phaseEndsAt || room.phase === PHASE.LOBBY || room.phase === PHASE.GAME_OVER) return;
-  if (room.phaseTimer) return;
+  if (room.phaseTimer || room.phaseAdvancing) return;
   const remaining = room.phaseEndsAt - Date.now();
   if (remaining <= 0) {
     onPhaseTimeout(room);
@@ -898,33 +898,40 @@ function resetRoomToLobby(room) {
 }
 
 function onPhaseTimeout(room) {
-  switch (room.phase) {
-    case PHASE.NIGHT:
-      resolveNight(room);
-      break;
-    case PHASE.DAWN: {
-      const win = checkWin(room);
-      if (win) {
-        endGame(room, win);
+  if (room.phaseAdvancing) return;
+  room.phaseAdvancing = true;
+  clearPhaseTimer(room);
+  try {
+    switch (room.phase) {
+      case PHASE.NIGHT:
+        resolveNight(room);
+        break;
+      case PHASE.DAWN: {
+        const win = checkWin(room);
+        if (win) {
+          endGame(room, win);
+          break;
+        }
+        startDayChat(room);
         break;
       }
-      startDayChat(room);
-      break;
+      case PHASE.DAY_CHAT:
+        startDayVote(room);
+        break;
+      case PHASE.DAY_VOTE:
+        resolveDayVote(room);
+        break;
+      case PHASE.LAST_WORDS:
+        startExecutionVote(room);
+        break;
+      case PHASE.EXECUTION_VOTE:
+        resolveExecutionVote(room);
+        break;
+      default:
+        break;
     }
-    case PHASE.DAY_CHAT:
-      startDayVote(room);
-      break;
-    case PHASE.DAY_VOTE:
-      resolveDayVote(room);
-      break;
-    case PHASE.LAST_WORDS:
-      startExecutionVote(room);
-      break;
-    case PHASE.EXECUTION_VOTE:
-      resolveExecutionVote(room);
-      break;
-    default:
-      break;
+  } finally {
+    room.phaseAdvancing = false;
   }
 }
 
@@ -1332,10 +1339,16 @@ function attachSession(socket, userID, nickname) {
   if (existing && existing.socketId && existing.socketId !== socket.id) {
     io.to(existing.socketId).emit('sessionTaken', { message: '다른 기기에서 접속하여 연결이 종료됩니다.' });
     const oldSocket = io.sockets.sockets.get(existing.socketId);
-    if (oldSocket) oldSocket.disconnect(true);
+    if (oldSocket && oldSocket.connected) oldSocket.disconnect(true);
   }
 
-  sessions.set(userID, { userID, nickname, socketId: socket.id, roomCode: existing ? existing.roomCode : null, playerId: existing ? existing.playerId : null });
+  sessions.set(userID, {
+    userID,
+    nickname,
+    socketId: socket.id,
+    roomCode: existing ? existing.roomCode : null,
+    playerId: existing ? existing.playerId : null
+  });
   socket.userID = userID;
   socket.nickname = nickname;
 }
@@ -1427,9 +1440,14 @@ function handleDisconnect(socket) {
   if (!userID) return;
 
   const sess = sessions.get(userID);
-  if (sess) sess.socketId = null;
+  if (!sess || sess.socketId !== socket.id) {
+    console.log(`[SESSION] ignore stale disconnect userID=${userID} socket=${socket.id}`);
+    return;
+  }
 
-  const roomCode = sess && sess.roomCode;
+  sess.socketId = null;
+
+  const roomCode = sess.roomCode;
   if (!roomCode || !rooms.has(roomCode)) return;
 
   const room = rooms.get(roomCode);
@@ -1441,7 +1459,14 @@ function handleDisconnect(socket) {
   if (player.disconnectTimer) clearTimeout(player.disconnectTimer);
 
   player.disconnectTimer = setTimeout(() => {
-    if (sessions.get(userID) && sessions.get(userID).socketId) return;
+    const latest = sessions.get(userID);
+    if (latest && latest.socketId) return;
+
+    if (room.phase !== PHASE.LOBBY && room.phase !== PHASE.GAME_OVER) {
+      console.log(`[SESSION] userID=${userID} offline during game, slot kept`);
+      broadcastState(room);
+      return;
+    }
 
     delete room.players[player.id];
     if (room.hostUserId === userID) {
@@ -1477,6 +1502,7 @@ function reconnectPlayer(socket, room, player) {
     socket.emit('privateInfo', { type: 'role', role: player.role, roleLabel: ROLE_LABELS[player.role] });
   }
   socket.emit('stateSync', toClientState(room, socket.userID));
+  socket.emit('joinResult', { ok: true });
   broadcastState(room);
   console.log(`[SESSION] userID=${socket.userID} reconnected to room ${room.code}`);
 }
@@ -1653,7 +1679,11 @@ io.on('connection', (socket) => {
       return;
     }
     if (Object.keys(room.players).length >= MAX_PLAYERS) return reject(socket, '방이 가득 찼습니다.');
-    if (room.phase !== PHASE.LOBBY) return reject(socket, '이미 게임이 진행 중입니다.');
+    if (room.phase !== PHASE.LOBBY) {
+      reject(socket, '게임이 진행 중입니다. 잠시 후 새로고침하면 다시 연결됩니다.');
+      socket.emit('joinResult', { ok: false, reason: 'game_in_progress' });
+      return;
+    }
 
     const playerId = randomUUID();
     room.players[playerId] = {
@@ -1667,6 +1697,7 @@ io.on('connection', (socket) => {
     socket.join(room.code);
     pushLobbySystemMessage(room, `${nickname}님이 입장했습니다.`);
     socket.emit('stateSync', toClientState(room, userID));
+    socket.emit('joinResult', { ok: true });
     broadcastState(room);
   });
 
