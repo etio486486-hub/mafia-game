@@ -39,6 +39,16 @@ function enqueueMotion(data) {
   if (!motionPlaying) playNextMotion();
 }
 
+function clearMotionQueue() {
+  motionQueue = [];
+  motionPlaying = false;
+  const overlay = document.getElementById('motion-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('active');
+  overlay.hidden = true;
+  overlay.innerHTML = '';
+}
+
 function playNextMotion() {
   if (!motionQueue.length) {
     motionPlaying = false;

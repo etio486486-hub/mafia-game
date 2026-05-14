@@ -525,6 +525,7 @@ function renderFromState() {
   }
 
   if (state.phase === 'game_over') {
+    dismissGameOverlays();
     showScreen('gameover');
     $('#gameover-message').textContent = state.winner === 'mafia' ? '마피아 팀 승리!' : '시민 팀 승리!';
     $('#gameover-roles').innerHTML = state.players.map(p =>
@@ -553,6 +554,8 @@ function renderFromState() {
 
   if (Array.isArray(state.dayChat)) chatStore.day = state.dayChat;
   if (Array.isArray(state.deadChat)) chatStore.dead = state.deadChat;
+  if (Array.isArray(state.mafiaChat)) chatStore.mafia = state.mafiaChat;
+  if (Array.isArray(state.lastWordsChat)) chatStore.lastWords = state.lastWordsChat;
 
   if (state.myRoleLabel && !state.myRole) {
     const badge = $('#my-role-badge');
@@ -1180,6 +1183,15 @@ function hideExecutionVoteOverlay() {
   if (overlay) overlay.hidden = true;
 }
 
+function dismissGameOverlays() {
+  hideExecutionVoteOverlay();
+  const voteOverlay = $('#vote-time-overlay');
+  if (voteOverlay) voteOverlay.hidden = true;
+  const voteResults = $('#vote-results-overlay');
+  if (voteResults) voteResults.hidden = true;
+  if (typeof clearMotionQueue === 'function') clearMotionQueue();
+}
+
 function submitExecutionVote(vote) {
   socket.emit('executionVote', { vote });
   runAnimation('anim-execution');
@@ -1355,7 +1367,16 @@ socket.on('stateSync', (data) => {
 
 socket.on('phaseChanged', (data) => {
   if (data.remainingMs != null) startLocalTimer(data.remainingMs);
-  if (data.timerAdjust) return;
+  if (state) {
+    state.phase = data.phase;
+    if (data.nightIndex != null) state.nightIndex = data.nightIndex;
+    if (data.dayIndex != null) state.dayIndex = data.dayIndex;
+    if (data.remainingMs != null) state.phaseRemainingMs = data.remainingMs;
+  }
+  if (data.timerAdjust) {
+    if (state) renderTimeButtons();
+    return;
+  }
 
   if (data.phase === 'night') {
     runAnimation('anim-night-fall');
@@ -1368,6 +1389,7 @@ socket.on('phaseChanged', (data) => {
     AudioManager.playSFX('day');
     activeChatChannel = 'day';
   } else if (data.phase === 'day_chat') {
+    if (typeof clearMotionQueue === 'function') clearMotionQueue();
     runAnimation('anim-dawn-rise', { silent: true });
     AudioManager.playSFX('day');
     activeChatChannel = 'day';
@@ -1384,6 +1406,10 @@ socket.on('phaseChanged', (data) => {
   }
   if (data.phase !== 'execution_vote') hideExecutionVoteOverlay();
   selectedTargetId = null;
+  if (state) {
+    renderTimeButtons();
+    updateChatTabs();
+  }
 });
 
 socket.on('animation', (data) => {
@@ -1402,17 +1428,20 @@ socket.on('gameMotionBatch', (data) => {
 });
 
 socket.on('privateInfo', (data) => {
+  if (!data) return;
   appendPrivateInfo(data);
   if (data.type === 'role' || data.type === 'inherit') {
     if (state) {
+      state.myRole = data.role;
+      state.myRoleLabel = data.roleLabel || state.myRoleLabel;
       if (data.type === 'role') {
-        state.myRole = data.role;
         resetPlayerNotesSession();
         localStorage.setItem(`mafia_notes_session_${state.roomCode}`, notesSessionKey);
         showRoleReveal(data.role);
       }
       renderMyRoleSidebar();
       renderRoleGuide();
+      renderActionPanel();
       renderM42Chrome();
     }
   }

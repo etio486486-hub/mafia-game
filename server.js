@@ -321,6 +321,51 @@ function getBots(room) {
   return Object.values(room.players).filter(p => p.isBot);
 }
 
+function isActiveGame(room) {
+  return !!(room && room.game && room.phase !== PHASE.GAME_OVER && !room.game.winner);
+}
+
+function bumpRoomTaskGeneration(room) {
+  if (!room) return;
+  room.taskGeneration = (room.taskGeneration || 0) + 1;
+  room.botActionGeneration = (room.botActionGeneration || 0) + 1;
+  room.resolvingDayVote = false;
+}
+
+function scheduleRoomTask(room, fn, delayMs) {
+  if (!room) return;
+  const gen = (room.taskGeneration || 0) + 1;
+  room.taskGeneration = gen;
+  setTimeout(() => {
+    if (!rooms.has(room.code)) return;
+    if (room.taskGeneration !== gen) return;
+    try {
+      fn();
+    } catch (err) {
+      console.error(`[ROOM TASK] room=${room.code}`, err);
+    }
+  }, delayMs);
+}
+
+function getRoomForSocket(socket) {
+  const sess = sessions.get(socket.userID);
+  if (!sess || !sess.roomCode) return { room: null, sess: null };
+  const room = rooms.get(sess.roomCode);
+  if (!room) return { room: null, sess };
+  return { room, sess };
+}
+
+function validateNightTarget(room, actor, targetId, opts = {}) {
+  const { aliveOnly = true, allowSelf = false, deadOnly = false } = opts;
+  if (!targetId) return { ok: false, message: '대상을 선택하세요.' };
+  const target = getPlayerById(room, targetId);
+  if (!target) return { ok: false, message: '존재하지 않는 대상입니다.' };
+  if (aliveOnly && !target.alive) return { ok: false, message: '생존자만 선택할 수 있습니다.' };
+  if (deadOnly && target.alive) return { ok: false, message: '사망자만 선택할 수 있습니다.' };
+  if (!allowSelf && target.id === actor.id) return { ok: false, message: '자신은 선택할 수 없습니다.' };
+  return { ok: true, target };
+}
+
 function pickRandomTarget(room, actor, opts = {}) {
   const { excludeSelf = true, aliveOnly = true, excludeIds = [] } = opts;
   const candidates = Object.values(room.players).filter(p => {
@@ -434,7 +479,12 @@ function createRoom(hostUserId, hostNickname) {
     pendingReporterReveal: null,
     pendingReporterRevealData: null,
     pendingMotions: [],
-    pendingReporterMotion: null
+    pendingReporterMotion: null,
+    resolvingDayVote: false,
+    taskGeneration: 0,
+    botActionGeneration: 0,
+    botLastWordsSent: false,
+    phaseAdvancing: false
   };
   rooms.set(code, room);
   return room;
@@ -473,6 +523,8 @@ function initGameState(room) {
   room.pendingReporterRevealData = null;
   room.pendingMotions = [];
   room.pendingReporterMotion = null;
+  bumpRoomTaskGeneration(room);
+  room.botLastWordsSent = false;
 }
 
 function resetNightActions(room) {
@@ -491,14 +543,14 @@ function resetNightActions(room) {
 
 function checkWin(room) {
   const alive = getAlivePlayers(room);
-  const aliveMafia = alive.filter(p => isMafiaRole(p.role));
-  const aliveNonMafia = alive.filter(p => !isMafiaRole(p.role));
+  const aliveMafiaTeam = alive.filter(p => isMafiaTeam(p.role));
+  const aliveCitizenTeam = alive.filter(p => !isMafiaTeam(p.role));
 
-  if (aliveMafia.length === 0) {
-    return { winner: 'citizens', message: '시민 팀 승리! 모든 마피아가 제거되었습니다.' };
+  if (aliveMafiaTeam.length === 0) {
+    return { winner: 'citizens', message: '시민 팀 승리! 마피아 팀이 모두 제거되었습니다.' };
   }
-  if (aliveMafia.length >= aliveNonMafia.length) {
-    return { winner: 'mafia', message: '마피아 팀 승리! 마피아가 우위를 점했습니다.' };
+  if (aliveMafiaTeam.length >= aliveCitizenTeam.length) {
+    return { winner: 'mafia', message: '마피아 팀 승리! 마피아 팀이 우위를 점했습니다.' };
   }
   return null;
 }
@@ -574,7 +626,11 @@ function toClientState(room, viewerUserId) {
     dayChat: room.phase !== PHASE.LOBBY && room.game ? room.chatLog.day : null,
     deadChat: viewer && room.game && (!viewer.alive || viewer.role === ROLE.MEDIUM)
       ? room.chatLog.dead
-      : null
+      : null,
+    mafiaChat: viewer && room.game && viewer.alive && (viewer.role === ROLE.MAFIA || viewer.joinedMafiaChat)
+      ? room.chatLog.mafia
+      : null,
+    lastWordsChat: room.game ? room.chatLog.lastWords : null
   };
 }
 
@@ -624,7 +680,7 @@ function flushDawnMotions(room) {
 // ─── bot AI ───────────────────────────────────────────────────────────────────
 
 function runBotActions(room) {
-  if (!room.game || room.phase === PHASE.LOBBY || room.phase === PHASE.GAME_OVER || room.phase === PHASE.DAWN) return;
+  if (!isActiveGame(room) || room.phase === PHASE.DAWN) return;
 
   const bots = getBots(room).filter(p => p.alive);
   if (!bots.length) return;
@@ -686,8 +742,10 @@ function runBotActions(room) {
   }
 
   if (room.phase === PHASE.LAST_WORDS) {
+    if (room.botLastWordsSent) return;
     const candidate = getPlayerById(room, g.executionCandidateId);
     if (candidate && candidate.isBot) {
+      room.botLastWordsSent = true;
       const msg = { from: candidate.nickname, fromId: candidate.id, text: '저는 억울합니다...', time: Date.now() };
       pushChat(room, 'lastWords', msg);
       broadcastToRoom(room, 'chatMessage', { channel: 'lastWords', ...msg });
@@ -699,17 +757,24 @@ function runBotActions(room) {
 
 function scheduleBotActions(room, durationMs) {
   if (!hasBots(room) || !room.game) return;
-  setTimeout(() => runBotActions(room), 800);
+  const gen = room.botActionGeneration;
+  const runIfCurrent = () => {
+    if (room.botActionGeneration !== gen) return;
+    if (!isActiveGame(room)) return;
+    runBotActions(room);
+  };
+  setTimeout(runIfCurrent, 800);
   if (durationMs > 5000) {
-    setTimeout(() => runBotActions(room), Math.floor(durationMs * 0.6));
+    setTimeout(runIfCurrent, Math.floor(durationMs * 0.6));
   }
 }
 
 // ─── phase controller ─────────────────────────────────────────────────────────
 
 function ensurePhaseTimer(room) {
-  if (!room.phaseEndsAt || room.phase === PHASE.LOBBY || room.phase === PHASE.GAME_OVER) return;
-  if (room.phaseTimer || room.phaseAdvancing) return;
+  if (!room || !room.phaseEndsAt || room.phase === PHASE.LOBBY || room.phase === PHASE.GAME_OVER) return;
+  if (room.phaseTimer || room.phaseAdvancing || room.resolvingDayVote) return;
+  if (room.game && room.game.winner) return;
   const remaining = room.phaseEndsAt - Date.now();
   if (remaining <= 0) {
     onPhaseTimeout(room);
@@ -727,8 +792,10 @@ function clearPhaseTimer(room) {
 
 function setPhase(room, phase, durationMs) {
   clearPhaseTimer(room);
+  room.botActionGeneration = (room.botActionGeneration || 0) + 1;
   room.phase = phase;
   room.phaseEndsAt = durationMs ? Date.now() + durationMs : null;
+  if (phase === PHASE.LAST_WORDS) room.botLastWordsSent = false;
 
   for (const p of Object.values(room.players)) {
     p.timeShortened = false;
@@ -799,6 +866,7 @@ function adjustPhaseTime(room, player, type) {
 }
 
 function startNight(room) {
+  if (room.game) room.game.dawnAnnouncements = [];
   room.game.nightIndex += 1;
   resetNightActions(room);
 
@@ -840,6 +908,7 @@ function startDayChat(room) {
   room.game.dayVotes = {};
   room.game.executionVotes = {};
   room.game.executionCandidateId = null;
+  room.game.dawnAnnouncements = [];
   setPhase(room, PHASE.DAY_CHAT, TIMERS[PHASE.DAY_CHAT]);
 }
 
@@ -862,16 +931,19 @@ function startExecutionVote(room) {
 }
 
 function endGame(room, win) {
+  bumpRoomTaskGeneration(room);
   clearPhaseTimer(room);
   room.game.winner = win.winner;
   room.phase = PHASE.GAME_OVER;
   room.phaseEndsAt = null;
+  room.resolvingDayVote = false;
   broadcastToRoom(room, 'gameOver', win);
   broadcastState(room);
   console.log(`[GAME OVER] room=${room.code} winner=${win.winner}: ${win.message}`);
 }
 
 function resetRoomToLobby(room) {
+  bumpRoomTaskGeneration(room);
   clearPhaseTimer(room);
   room.phase = PHASE.LOBBY;
   room.phaseEndsAt = null;
@@ -1225,6 +1297,9 @@ function buildDayVoteResults(room) {
 }
 
 function proceedDayVoteAfterResults(room, results) {
+  if (!isActiveGame(room)) return;
+  if (room.phase !== PHASE.DAY_VOTE) return;
+
   const topCandidates = results.topCandidateId
     ? [results.topCandidateId]
     : (results.tie
@@ -1255,13 +1330,15 @@ function proceedDayVoteAfterResults(room, results) {
 
 function resolveDayVote(room) {
   if (room.resolvingDayVote) return;
+  if (!isActiveGame(room)) return;
   room.resolvingDayVote = true;
 
   const results = buildDayVoteResults(room);
   broadcastToRoom(room, 'dayVoteResults', results);
 
-  setTimeout(() => {
+  scheduleRoomTask(room, () => {
     room.resolvingDayVote = false;
+    if (!isActiveGame(room) || room.phase !== PHASE.DAY_VOTE) return;
     proceedDayVoteAfterResults(room, results);
   }, VOTE_RESULTS_DISPLAY_MS);
 }
@@ -1491,6 +1568,7 @@ function reconnectPlayer(socket, room, player) {
     player.disconnectTimer = null;
   }
   player.connected = true;
+  if (socket.nickname) player.nickname = socket.nickname;
   const sess = sessions.get(socket.userID);
   if (sess) {
     sess.socketId = socket.id;
@@ -1510,6 +1588,7 @@ function reconnectPlayer(socket, room, player) {
 // ─── action validators ─────────────────────────────────────────────────────────
 
 function getViewer(room, socket) {
+  if (!room || !socket) return null;
   return getPlayerByUserId(room, socket.userID);
 }
 
@@ -1518,60 +1597,76 @@ function reject(socket, msg) {
 }
 
 function recordMafiaVote(room, socket, targetId) {
+  if (!room || !room.game) return reject(socket, '방을 찾을 수 없습니다.');
   const player = getViewer(room, socket);
   if (!player || !player.alive || player.role !== ROLE.MAFIA) return reject(socket, '마피아만 투표할 수 있습니다.');
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
+  const valid = validateNightTarget(room, player, targetId);
+  if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.mafiaVotes[player.id] = targetId;
   broadcastState(room);
 }
 
 function recordSpyInvestigate(room, socket, targetId) {
+  if (!room || !room.game) return reject(socket, '방을 찾을 수 없습니다.');
   const player = getViewer(room, socket);
   if (!player || !player.alive || player.role !== ROLE.SPY) return reject(socket, '스파이만 조사할 수 있습니다.');
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
+  const valid = validateNightTarget(room, player, targetId);
+  if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.spyTarget = targetId;
   socket.emit('privateInfo', { type: 'actionConfirm', action: 'spy', targetId });
 }
 
 function recordPoliceInvestigate(room, socket, targetId) {
+  if (!room || !room.game) return reject(socket, '방을 찾을 수 없습니다.');
   const player = getViewer(room, socket);
   if (!player || !player.alive || player.role !== ROLE.POLICE) return reject(socket, '경찰만 조사할 수 있습니다.');
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
+  const valid = validateNightTarget(room, player, targetId);
+  if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.policeTarget = targetId;
   socket.emit('privateInfo', { type: 'actionConfirm', action: 'police', targetId });
 }
 
 function recordDoctorHeal(room, socket, targetId) {
+  if (!room || !room.game) return reject(socket, '방을 찾을 수 없습니다.');
   const player = getViewer(room, socket);
   if (!player || !player.alive || player.role !== ROLE.DOCTOR) return reject(socket, '의사만 치료할 수 있습니다.');
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
+  const valid = validateNightTarget(room, player, targetId, { allowSelf: true });
+  if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.doctorTarget = targetId;
   socket.emit('privateInfo', { type: 'actionConfirm', action: 'doctor', targetId });
 }
 
 function recordReporterScoop(room, socket, targetId) {
+  if (!room || !room.game) return reject(socket, '방을 찾을 수 없습니다.');
   const player = getViewer(room, socket);
   if (!player || !player.alive || player.role !== ROLE.REPORTER) return reject(socket, '기자만 취재할 수 있습니다.');
   if (player.reporterUsed) return reject(socket, '이미 취재를 사용했습니다.');
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
-  if (!room.game || room.game.nightIndex < 2) return reject(socket, '기자 취재는 2번째 밤부터 가능합니다.');
+  if (room.game.nightIndex < 2) return reject(socket, '기자 취재는 2번째 밤부터 가능합니다.');
+  const valid = validateNightTarget(room, player, targetId);
+  if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.reporterTarget = targetId;
   socket.emit('privateInfo', { type: 'actionConfirm', action: 'reporter', targetId });
 }
 
 function recordMediumPurify(room, socket, targetId) {
+  if (!room || !room.game) return reject(socket, '방을 찾을 수 없습니다.');
   const player = getViewer(room, socket);
   if (!player || !player.alive || player.role !== ROLE.MEDIUM) return reject(socket, '영매만 성불할 수 있습니다.');
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
-  const target = getPlayerById(room, targetId);
-  if (!target || target.alive) return reject(socket, '사망자만 성불할 수 있습니다.');
+  const valid = validateNightTarget(room, player, targetId, { aliveOnly: false, deadOnly: true });
+  if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.mediumTarget = targetId;
   socket.emit('privateInfo', { type: 'actionConfirm', action: 'medium', targetId });
   broadcastState(room);
 }
 
 function recordDayVote(room, socket, targetId) {
-  const player = getViewer(room, socket);
+  if (!room || !room.game) return reject(socket, '방을 찾을 수 없습니다.');
   if (!player || !player.alive) return reject(socket, '생존자만 투표할 수 있습니다.');
   if (room.phase !== PHASE.DAY_VOTE) return reject(socket, '투표 시간이 아닙니다.');
   if (!targetId || room.game.dayVotes[player.id] === targetId) {
@@ -1585,6 +1680,7 @@ function recordDayVote(room, socket, targetId) {
 }
 
 function recordExecutionVote(room, socket, vote) {
+  if (!room || !room.game) return reject(socket, '방을 찾을 수 없습니다.');
   const player = getViewer(room, socket);
   if (!player || !player.alive) return reject(socket, '생존자만 투표할 수 있습니다.');
   if (room.phase !== PHASE.EXECUTION_VOTE) return reject(socket, '찬반 투표 시간이 아닙니다.');
@@ -1762,81 +1858,81 @@ io.on('connection', (socket) => {
   socket.on('leaveRoom', () => leaveRoomBySocket(socket));
 
   socket.on('lobbyChat', (data) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    handleChat(rooms.get(sess.roomCode), socket, 'lobby', data.text);
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    handleChat(room, socket, 'lobby', data && data.text);
   });
 
   socket.on('chat', (data) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    handleChat(rooms.get(sess.roomCode), socket, 'day', data.text);
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    handleChat(room, socket, 'day', data && data.text);
   });
 
   socket.on('mafiaChat', (data) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    handleChat(rooms.get(sess.roomCode), socket, 'mafia', data.text);
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    handleChat(room, socket, 'mafia', data && data.text);
   });
 
   socket.on('deadChat', (data) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    handleChat(rooms.get(sess.roomCode), socket, 'dead', data.text);
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    handleChat(room, socket, 'dead', data && data.text);
   });
 
   socket.on('lastWordsChat', (data) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    handleChat(rooms.get(sess.roomCode), socket, 'lastWords', data.text);
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    handleChat(room, socket, 'lastWords', data && data.text);
   });
 
-  socket.on('mafiaVote', ({ targetId }) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    recordMafiaVote(rooms.get(sess.roomCode), socket, targetId);
+  socket.on('mafiaVote', ({ targetId } = {}) => {
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    recordMafiaVote(room, socket, targetId);
   });
 
-  socket.on('spyInvestigate', ({ targetId }) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    recordSpyInvestigate(rooms.get(sess.roomCode), socket, targetId);
+  socket.on('spyInvestigate', ({ targetId } = {}) => {
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    recordSpyInvestigate(room, socket, targetId);
   });
 
-  socket.on('policeInvestigate', ({ targetId }) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    recordPoliceInvestigate(rooms.get(sess.roomCode), socket, targetId);
+  socket.on('policeInvestigate', ({ targetId } = {}) => {
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    recordPoliceInvestigate(room, socket, targetId);
   });
 
-  socket.on('doctorHeal', ({ targetId }) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    recordDoctorHeal(rooms.get(sess.roomCode), socket, targetId);
+  socket.on('doctorHeal', ({ targetId } = {}) => {
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    recordDoctorHeal(room, socket, targetId);
   });
 
-  socket.on('reporterScoop', ({ targetId }) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    recordReporterScoop(rooms.get(sess.roomCode), socket, targetId);
+  socket.on('reporterScoop', ({ targetId } = {}) => {
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    recordReporterScoop(room, socket, targetId);
   });
 
-  socket.on('mediumPurify', ({ targetId }) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    recordMediumPurify(rooms.get(sess.roomCode), socket, targetId);
+  socket.on('mediumPurify', ({ targetId } = {}) => {
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    recordMediumPurify(room, socket, targetId);
   });
 
-  socket.on('dayVote', ({ targetId }) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    recordDayVote(rooms.get(sess.roomCode), socket, targetId);
+  socket.on('dayVote', ({ targetId } = {}) => {
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    recordDayVote(room, socket, targetId);
   });
 
-  socket.on('executionVote', ({ vote }) => {
-    const sess = sessions.get(socket.userID);
-    if (!sess || !sess.roomCode) return;
-    recordExecutionVote(rooms.get(sess.roomCode), socket, vote);
+  socket.on('executionVote', ({ vote } = {}) => {
+    const { room } = getRoomForSocket(socket);
+    if (!room) return reject(socket, '방을 찾을 수 없습니다.');
+    recordExecutionVote(room, socket, vote);
   });
 
   socket.on('addBot', () => {
@@ -1875,6 +1971,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => handleDisconnect(socket));
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] uncaughtException', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] unhandledRejection', reason);
 });
 
 httpServer.listen(PORT, HOST, () => {
