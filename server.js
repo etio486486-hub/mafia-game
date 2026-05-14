@@ -11,7 +11,8 @@ const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
   pingInterval: 25000,
   pingTimeout: 60000,
-  cors: { origin: '*' }
+  cors: { origin: '*' },
+  transports: ['polling', 'websocket']
 });
 
 function resolveMotionAsset(filename) {

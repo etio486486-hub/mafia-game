@@ -267,13 +267,7 @@ const chatStore = { lobby: [], day: [], mafia: [], dead: [], lastWords: [] };
 let timerInterval = null;
 let phaseEndEstimate = 0;
 
-const socket = io({
-  reconnection: true,
-  reconnectionDelay: 1000,
-  reconnectionAttempts: 30,
-  transports: ['polling', 'websocket'],
-  timeout: 20000
-});
+const socket = io({ reconnection: true, reconnectionDelay: 1000, reconnectionAttempts: 20 });
 let socketConnected = false;
 
 /* ─── DOM ─────────────────────────────────────────────────────────────────── */
@@ -293,16 +287,10 @@ function getNickname() {
 }
 
 function updateLobbyConnectionUi() {
-  const statusEl = $('#connection-status');
   const createBtn = $('#btn-create');
   const joinBtn = $('#btn-join');
-  if (statusEl) {
-    statusEl.textContent = socketConnected ? '서버 연결됨' : '서버 연결 중...';
-    statusEl.classList.toggle('is-connected', socketConnected);
-    statusEl.classList.toggle('is-connecting', !socketConnected);
-  }
-  if (createBtn) createBtn.disabled = false;
-  if (joinBtn) joinBtn.disabled = false;
+  if (createBtn) createBtn.disabled = !socketConnected;
+  if (joinBtn) joinBtn.disabled = !socketConnected;
 }
 
 function requestJoin(roomCode) {
@@ -1419,16 +1407,11 @@ socket.on('error', (data) => showToast(data.message));
 /* ─── UI bindings ───────────────────────────────────────────────────────────── */
 
 $('#btn-create').addEventListener('click', () => {
-  if (!socketConnected) {
-    showToast('서버에 연결 중입니다. 잠시 후 다시 시도하세요.');
-    socket.connect();
-    return;
-  }
+  if (!socketConnected) return showToast('서버에 연결 중입니다. 잠시 후 다시 시도하세요.');
   const nickname = getNickname();
   if (!nickname) return showToast('닉네임을 입력하세요.');
   localStorage.setItem('mafia_nickname', nickname);
   socket.emit('createRoom', { userID, nickname });
-  showToast('방을 만드는 중...');
 });
 
 $('#btn-join').addEventListener('click', () => {
@@ -1480,18 +1463,18 @@ if (copyInviteBtn) copyInviteBtn.addEventListener('click', copyInviteLink);
   }
 })();
 
-$('#btn-player-memo-clear')?.addEventListener('click', clearPlayerMemo);
-$('#btn-player-memo-close')?.addEventListener('click', closePlayerMemo);
-$('#player-memo-overlay .player-memo-backdrop')?.addEventListener('click', closePlayerMemo);
+$('#btn-player-memo-clear').addEventListener('click', clearPlayerMemo);
+$('#btn-player-memo-close').addEventListener('click', closePlayerMemo);
+$('#player-memo-overlay .player-memo-backdrop').addEventListener('click', closePlayerMemo);
 
 $('#btn-execution-yes')?.addEventListener('click', () => submitExecutionVote('yes'));
 $('#btn-execution-no')?.addEventListener('click', () => submitExecutionVote('no'));
 
-$('#btn-send-chat')?.addEventListener('click', sendChat);
-$('#chat-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+$('#btn-send-chat').addEventListener('click', sendChat);
+$('#chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
 
-$('#btn-send-lobby-chat')?.addEventListener('click', sendLobbyChat);
-$('#lobby-chat-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendLobbyChat(); });
+$('#btn-send-lobby-chat').addEventListener('click', sendLobbyChat);
+$('#lobby-chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendLobbyChat(); });
 
 function sendLobbyChat() {
   const text = ($('#lobby-chat-input').value || '').trim();

@@ -248,6 +248,26 @@ input:disabled {
   min-height: 36px;
 }
 
+.connection-status {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 0.8rem;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.connection-status.is-connecting {
+  color: var(--warning);
+  background: rgba(245, 166, 35, 0.1);
+}
+
+.connection-status.is-connected {
+  color: var(--success);
+  background: rgba(62, 207, 142, 0.1);
+  border-color: rgba(62, 207, 142, 0.35);
+}
+
 .server-info {
   margin-top: 16px;
   padding: 12px;
