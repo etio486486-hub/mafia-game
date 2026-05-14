@@ -1240,7 +1240,7 @@ function renderTimeButtons() {
   const shorten = $('#btn-time-shorten');
   const extend = $('#btn-time-extend');
   if (!shorten || !extend || !state) return;
-  const noAdjust = ['night', 'day_vote', 'execution_vote', 'last_words'].includes(state.phase);
+  const noAdjust = ['night', 'dawn', 'day_vote', 'execution_vote', 'last_words'].includes(state.phase);
   shorten.hidden = noAdjust;
   extend.hidden = noAdjust;
   if (noAdjust) return;

@@ -557,10 +557,10 @@ function toClientState(room, viewerUserId) {
     reporterUsed: viewer ? viewer.reporterUsed : false,
     joinedMafiaChat: viewer ? viewer.joinedMafiaChat : false,
     canTimeShorten: !!(viewer && viewer.alive && room.phaseTimer && !viewer.timeShortened &&
-      room.phase !== PHASE.NIGHT &&
+      room.phase !== PHASE.NIGHT && room.phase !== PHASE.DAWN &&
       room.phase !== PHASE.DAY_VOTE && room.phase !== PHASE.EXECUTION_VOTE && room.phase !== PHASE.LAST_WORDS),
     canTimeExtend: !!(viewer && viewer.alive && room.phaseTimer && !viewer.timeIncreased &&
-      room.phase !== PHASE.NIGHT &&
+      room.phase !== PHASE.NIGHT && room.phase !== PHASE.DAWN &&
       room.phase !== PHASE.DAY_VOTE && room.phase !== PHASE.EXECUTION_VOTE && room.phase !== PHASE.LAST_WORDS),
     debugRoles: viewer && viewer.userID === room.hostUserId && hasBots(room) && room.phase !== PHASE.LOBBY
       ? Object.values(room.players).map(p => ({
@@ -575,6 +575,7 @@ function toClientState(room, viewerUserId) {
 }
 
 function broadcastState(room) {
+  ensurePhaseTimer(room);
   for (const p of Object.values(room.players)) {
     if (!p.connected) continue;
     const sess = sessions.get(p.userID);
@@ -702,6 +703,17 @@ function scheduleBotActions(room, durationMs) {
 
 // ─── phase controller ─────────────────────────────────────────────────────────
 
+function ensurePhaseTimer(room) {
+  if (!room.phaseEndsAt || room.phase === PHASE.LOBBY || room.phase === PHASE.GAME_OVER) return;
+  if (room.phaseTimer) return;
+  const remaining = room.phaseEndsAt - Date.now();
+  if (remaining <= 0) {
+    onPhaseTimeout(room);
+    return;
+  }
+  room.phaseTimer = setTimeout(() => onPhaseTimeout(room), remaining);
+}
+
 function clearPhaseTimer(room) {
   if (room.phaseTimer) {
     clearTimeout(room.phaseTimer);
@@ -742,6 +754,9 @@ function adjustPhaseTime(room, player, type) {
   }
   if (room.phase === PHASE.NIGHT) {
     return { ok: false, message: '밤에는 시간 조절이 불가합니다.' };
+  }
+  if (room.phase === PHASE.DAWN) {
+    return { ok: false, message: '아침 결과 확인 중에는 시간 조절이 불가합니다.' };
   }
   if (room.phase === PHASE.DAY_VOTE || room.phase === PHASE.EXECUTION_VOTE || room.phase === PHASE.LAST_WORDS) {
     return { ok: false, message: '투표·찬반·최후변론 중에는 시간 조절이 불가합니다.' };
@@ -814,12 +829,6 @@ function startDawn(room) {
   flushDawnMotions(room);
   room.pendingReporterMotion = null;
   broadcastAnimation(room, 'anim-dawn-rise');
-  clearPhaseTimer(room);
-  room.phaseTimer = setTimeout(() => {
-    const win = checkWin(room);
-    if (win) return endGame(room, win);
-    startDayChat(room);
-  }, TIMERS[PHASE.DAWN]);
 }
 
 function startDayChat(room) {
@@ -889,6 +898,15 @@ function onPhaseTimeout(room) {
     case PHASE.NIGHT:
       resolveNight(room);
       break;
+    case PHASE.DAWN: {
+      const win = checkWin(room);
+      if (win) {
+        endGame(room, win);
+        break;
+      }
+      startDayChat(room);
+      break;
+    }
     case PHASE.DAY_CHAT:
       startDayVote(room);
       break;
