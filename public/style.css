@@ -301,6 +301,10 @@ input:disabled {
   white-space: nowrap;
 }
 
+.room-leave-btn {
+  white-space: nowrap;
+}
+
 .room-badge {
   font-size: 1.1rem;
 }

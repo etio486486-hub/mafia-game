@@ -305,6 +305,19 @@ function updateLobbyConnectionUi() {
   if (joinBtn) joinBtn.disabled = false;
 }
 
+function leaveRoom() {
+  localStorage.removeItem('mafia_roomCode');
+  socket.emit('leaveRoom');
+  showToast('방에서 나갔습니다.');
+}
+
+function resetLobbyClientState() {
+  selectedTargetId = null;
+  chatStore.lobby = [];
+  const roomInput = $('#room-code');
+  if (roomInput) roomInput.value = '';
+}
+
 function requestJoin(roomCode) {
   if (!socketConnected) {
     return showToast('서버에 연결 중입니다. 잠시 후 다시 시도하세요.');
@@ -1320,6 +1333,8 @@ socket.on('sessionTaken', (data) => {
 socket.on('stateSync', (data) => {
   state = data;
   if (data.roomCode) localStorage.setItem('mafia_roomCode', data.roomCode);
+  else localStorage.removeItem('mafia_roomCode');
+  if (data.phase === 'none') resetLobbyClientState();
   if (data.phase && data.phase !== 'lobby' && data.phase !== 'none') {
     if (!notesSessionKey) notesSessionKey = localStorage.getItem(`mafia_notes_session_${data.roomCode}`) || String(Date.now());
     localStorage.setItem(`mafia_notes_session_${data.roomCode}`, notesSessionKey);
@@ -1470,6 +1485,9 @@ if (reporterRevealClose) reporterRevealClose.addEventListener('click', closeRepo
 
 const copyInviteBtn = $('#btn-copy-invite');
 if (copyInviteBtn) copyInviteBtn.addEventListener('click', copyInviteLink);
+
+const leaveRoomBtn = $('#btn-leave-room');
+if (leaveRoomBtn) leaveRoomBtn.addEventListener('click', leaveRoom);
 
 (function applyRoomCodeFromUrl() {
   const params = new URLSearchParams(window.location.search);

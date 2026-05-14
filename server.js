@@ -1318,6 +1318,60 @@ function attachSession(socket, userID, nickname) {
   socket.nickname = nickname;
 }
 
+function removePlayerFromRoom(room, userID, { announce = false } = {}) {
+  const player = getPlayerByUserId(room, userID);
+  if (!player) return { ok: false, message: '플레이어를 찾을 수 없습니다.' };
+
+  if (player.disconnectTimer) {
+    clearTimeout(player.disconnectTimer);
+    player.disconnectTimer = null;
+  }
+
+  const nickname = player.nickname;
+  delete room.players[player.id];
+
+  if (room.hostUserId === userID) {
+    const remaining = Object.values(room.players);
+    room.hostUserId = remaining.length > 0 ? remaining[0].userID : null;
+  }
+
+  const playerCount = Object.keys(room.players).length;
+  if (playerCount === 0) {
+    rooms.delete(room.code);
+  } else if (announce) {
+    pushLobbySystemMessage(room, `${nickname}님이 나갔습니다.`);
+    broadcastState(room);
+  }
+
+  return { ok: true, nickname, empty: playerCount === 0 };
+}
+
+function leaveRoomBySocket(socket) {
+  const sess = sessions.get(socket.userID);
+  if (!sess || !sess.roomCode) {
+    socket.emit('stateSync', { phase: 'none', serverInfo: getServerInfoFromSocket(socket) });
+    return;
+  }
+
+  const room = rooms.get(sess.roomCode);
+  if (!room) {
+    sess.roomCode = null;
+    sess.playerId = null;
+    socket.emit('stateSync', { phase: 'none', serverInfo: getServerInfoFromSocket(socket) });
+    return;
+  }
+
+  if (room.phase !== PHASE.LOBBY) {
+    return reject(socket, '게임이 진행 중일 때는 나갈 수 없습니다.');
+  }
+
+  removePlayerFromRoom(room, socket.userID, { announce: true });
+  socket.leave(room.code);
+  sess.roomCode = null;
+  sess.playerId = null;
+  socket.emit('stateSync', { phase: 'none', serverInfo: getServerInfoFromSocket(socket) });
+}
+
 function handleDisconnect(socket) {
   const userID = socket.userID;
   if (!userID) return;
@@ -1615,6 +1669,8 @@ io.on('connection', (socket) => {
     if (room.phase !== PHASE.GAME_OVER) return reject(socket, '게임 종료 후에만 새 게임을 시작할 수 있습니다.');
     resetRoomToLobby(room);
   });
+
+  socket.on('leaveRoom', () => leaveRoomBySocket(socket));
 
   socket.on('lobbyChat', (data) => {
     const sess = sessions.get(socket.userID);
