@@ -306,6 +306,9 @@ function updateLobbyConnectionUi() {
 }
 
 function leaveRoom() {
+  if (state && state.phase && !['none', 'lobby', 'game_over'].includes(state.phase)) {
+    if (!window.confirm('게임 중입니다. 방을 나가면 로비로 돌아갑니다. 나가시겠습니까?')) return;
+  }
   localStorage.removeItem('mafia_roomCode');
   socket.emit('leaveRoom');
   showToast('방에서 나갔습니다.');
@@ -574,7 +577,6 @@ function renderFromState() {
   renderPlayerGrid();
   renderActionPanel();
   updateChatTabs();
-  updateChatInputState();
   updateExecutionVoteOverlay();
 }
 
@@ -799,7 +801,7 @@ function renderM42Chrome() {
       bannerSub.textContent = '능력을 사용할 대상을 선택하세요';
     } else if (state.phase === 'dawn') {
       bannerMain.textContent = '낮이 밝았습니다';
-      bannerSub.textContent = '밤의 결과를 확인하세요';
+      bannerSub.textContent = '밤의 결과를 확인하며 대화할 수 있습니다';
     } else if (state.phase === 'day_chat') {
       bannerMain.textContent = dayIdx > 0 ? `${dayIdx}번째 낮` : '낮 토론';
       bannerSub.textContent = '대화를 통해 추리하세요';
@@ -1097,8 +1099,8 @@ function renderActionPanel() {
     } else {
       hint.textContent = '최후의 반론을 듣고 있습니다.';
     }
-  } else if (state.phase === 'day_chat') {
-    hint.textContent = '자유롭게 토론하세요.';
+  } else if (state.phase === 'dawn' || state.phase === 'day_chat') {
+    hint.textContent = state.phase === 'dawn' ? '밤 결과를 확인하며 대화하세요.' : '자유롭게 토론하세요.';
   } else {
     hint.textContent = '';
   }
@@ -1187,16 +1189,6 @@ function submitExecutionVote(vote) {
   showToast(vote === 'yes' ? '찬성했습니다.' : '반대했습니다.');
 }
 
-function updateChatInputState() {
-  const input = $('#chat-input');
-  const btn = $('#btn-send-chat');
-  if (!input || !state) return;
-  const readOnlyDead = activeChatChannel === 'dead' && state.canDeadChatView && !state.canDeadChatSend;
-  input.disabled = !!readOnlyDead;
-  btn.disabled = !!readOnlyDead;
-  input.placeholder = readOnlyDead ? '사망자만 메시지를 보낼 수 있습니다.' : '메시지 입력...';
-}
-
 function updateChatTabs() {
   const tabDay = $('#tab-day');
   const tabMafia = $('#tab-mafia');
@@ -1210,7 +1202,7 @@ function updateChatTabs() {
   if (state.phase === 'night') {
     tabDay.textContent = '밤 (낮 채팅 비활성)';
     if (state.canMafiaChat && activeChatChannel === 'day') activeChatChannel = 'mafia';
-  } else if (state.phase === 'day_chat') {
+  } else if (state.phase === 'dawn' || state.phase === 'day_chat') {
     tabDay.textContent = '낮 채팅';
     if (activeChatChannel === 'mafia') activeChatChannel = 'day';
   } else if (state.phase === 'last_words') {
@@ -1223,21 +1215,23 @@ function updateChatTabs() {
   if (tabMafia.hidden && activeChatChannel === 'mafia') activeChatChannel = 'day';
   if (tabDead.hidden && activeChatChannel === 'dead') activeChatChannel = 'day';
 
-  updateChatInputState();
-
   document.querySelectorAll('.chat-tab').forEach(t => {
     t.classList.toggle('active', t.dataset.channel === activeChatChannel);
   });
 
+  const readOnlyDead = activeChatChannel === 'dead' && state.canDeadChatView && !state.canDeadChatSend;
   const canType = (
-    (activeChatChannel === 'day' && state.phase === 'day_chat') ||
+    (activeChatChannel === 'day' && (state.phase === 'dawn' || state.phase === 'day_chat')) ||
     (activeChatChannel === 'mafia' && state.phase === 'night' && state.canMafiaChat) ||
-    (activeChatChannel === 'dead' && state.canDeadChatView) ||
+    (activeChatChannel === 'dead' && state.canDeadChatView && state.canDeadChatSend) ||
     (activeChatChannel === 'lastWords' && state.phase === 'last_words' && state.myPlayerId === state.executionCandidateId)
   );
-  $('#chat-input').disabled = !canType;
-  $('#btn-send-chat').disabled = !canType;
-  $('#chat-input').placeholder = canType ? '메시지 입력...' : '이 채널에서는 지금 채팅할 수 없습니다';
+  const inputEnabled = canType && !readOnlyDead;
+  $('#chat-input').disabled = !inputEnabled;
+  $('#btn-send-chat').disabled = !inputEnabled;
+  $('#chat-input').placeholder = readOnlyDead
+    ? '사망자만 메시지를 보낼 수 있습니다.'
+    : (inputEnabled ? '메시지 입력...' : '이 채널에서는 지금 채팅할 수 없습니다');
 
   renderChat();
 }
@@ -1486,8 +1480,8 @@ if (reporterRevealClose) reporterRevealClose.addEventListener('click', closeRepo
 const copyInviteBtn = $('#btn-copy-invite');
 if (copyInviteBtn) copyInviteBtn.addEventListener('click', copyInviteLink);
 
-const leaveRoomBtn = $('#btn-leave-room');
-if (leaveRoomBtn) leaveRoomBtn.addEventListener('click', leaveRoom);
+$('#btn-leave-room')?.addEventListener('click', leaveRoom);
+$('#btn-leave-game')?.addEventListener('click', leaveRoom);
 
 (function applyRoomCodeFromUrl() {
   const params = new URLSearchParams(window.location.search);

@@ -2027,6 +2027,21 @@ body.phase-night .m42-bg-layer {
   justify-content: flex-end;
 }
 
+.m42-leave-btn {
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  border-color: rgba(231, 76, 94, 0.45);
+  color: #ffb4bc;
+  background: rgba(231, 76, 94, 0.12);
+}
+
+.m42-leave-btn:hover {
+  background: rgba(231, 76, 94, 0.22);
+  border-color: rgba(231, 76, 94, 0.65);
+  color: #ffd0d0;
+}
+
 .m42-mode-label {
   font-size: 0.78rem;
   color: var(--muted);

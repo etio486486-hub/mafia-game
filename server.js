@@ -1318,6 +1318,22 @@ function attachSession(socket, userID, nickname) {
   socket.nickname = nickname;
 }
 
+function cleanupPlayerGameState(room, playerId) {
+  const g = room.game;
+  if (!g) return;
+  delete g.dayVotes[playerId];
+  delete g.executionVotes[playerId];
+  if (g.executionCandidateId === playerId) g.executionCandidateId = null;
+  const na = g.nightActions;
+  if (!na) return;
+  delete na.mafiaVotes[playerId];
+  if (na.spyTarget === playerId) na.spyTarget = null;
+  if (na.policeTarget === playerId) na.policeTarget = null;
+  if (na.doctorTarget === playerId) na.doctorTarget = null;
+  if (na.reporterTarget === playerId) na.reporterTarget = null;
+  if (na.mediumTarget === playerId) na.mediumTarget = null;
+}
+
 function removePlayerFromRoom(room, userID, { announce = false } = {}) {
   const player = getPlayerByUserId(room, userID);
   if (!player) return { ok: false, message: '플레이어를 찾을 수 없습니다.' };
@@ -1328,6 +1344,9 @@ function removePlayerFromRoom(room, userID, { announce = false } = {}) {
   }
 
   const nickname = player.nickname;
+  const wasInGame = room.phase !== PHASE.LOBBY && room.phase !== PHASE.GAME_OVER;
+  if (wasInGame) cleanupPlayerGameState(room, player.id);
+
   delete room.players[player.id];
 
   if (room.hostUserId === userID) {
@@ -1338,12 +1357,24 @@ function removePlayerFromRoom(room, userID, { announce = false } = {}) {
   const playerCount = Object.keys(room.players).length;
   if (playerCount === 0) {
     rooms.delete(room.code);
-  } else if (announce) {
-    pushLobbySystemMessage(room, `${nickname}님이 나갔습니다.`);
-    broadcastState(room);
+  } else {
+    if (announce) {
+      if (room.phase === PHASE.LOBBY) {
+        pushLobbySystemMessage(room, `${nickname}님이 나갔습니다.`);
+      } else if (room.phase !== PHASE.GAME_OVER) {
+        pushGameSystemMessage(room, `${nickname}님이 방을 나갔습니다.`);
+      }
+    }
+    if (wasInGame) {
+      const win = checkWin(room);
+      if (win) endGame(room, win);
+      else broadcastState(room);
+    } else if (announce) {
+      broadcastState(room);
+    }
   }
 
-  return { ok: true, nickname, empty: playerCount === 0 };
+  return { ok: true, nickname, empty: playerCount === 0, wasInGame };
 }
 
 function leaveRoomBySocket(socket) {
@@ -1361,12 +1392,9 @@ function leaveRoomBySocket(socket) {
     return;
   }
 
-  if (room.phase !== PHASE.LOBBY) {
-    return reject(socket, '게임이 진행 중일 때는 나갈 수 없습니다.');
-  }
-
+  const roomCode = room.code;
   removePlayerFromRoom(room, socket.userID, { announce: true });
-  socket.leave(room.code);
+  socket.leave(roomCode);
   sess.roomCode = null;
   sess.playerId = null;
   socket.emit('stateSync', { phase: 'none', serverInfo: getServerInfoFromSocket(socket) });
@@ -1532,6 +1560,12 @@ function pushLobbySystemMessage(room, text) {
   broadcastToRoom(room, 'chatMessage', { channel: 'lobby', ...entry });
 }
 
+function pushGameSystemMessage(room, text) {
+  const entry = { from: '시스템', fromId: null, text, system: true, time: Date.now() };
+  pushChat(room, 'day', entry);
+  broadcastToRoom(room, 'chatMessage', { channel: 'day', ...entry });
+}
+
 function handleChat(room, socket, channel, text) {
   if (!room || !text || !String(text).trim()) return;
   const player = getViewer(room, socket);
@@ -1543,7 +1577,9 @@ function handleChat(room, socket, channel, text) {
     pushChat(room, 'lobby', msg);
     broadcastToRoom(room, 'chatMessage', { channel: 'lobby', ...msg });
   } else if (channel === 'day') {
-    if (room.phase !== PHASE.DAY_CHAT || !player.alive) return reject(socket, '낮 채팅 시간이 아니거나 사망했습니다.');
+    if (![PHASE.DAWN, PHASE.DAY_CHAT].includes(room.phase) || !player.alive) {
+      return reject(socket, '낮 채팅 시간이 아니거나 사망했습니다.');
+    }
     pushChat(room, 'day', msg);
     broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg }, p => p.alive);
   } else if (channel === 'mafia') {
