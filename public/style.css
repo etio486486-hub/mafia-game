@@ -372,6 +372,21 @@ input:disabled {
 
 .waiting-footer {
   margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.room-leave-footer {
+  width: 100%;
+  border-color: rgba(231, 76, 94, 0.45);
+  color: #ffb4bc;
+  background: rgba(231, 76, 94, 0.12);
+}
+
+.room-leave-footer:hover {
+  background: rgba(231, 76, 94, 0.22);
+  border-color: rgba(231, 76, 94, 0.65);
 }
 
 .hint {
