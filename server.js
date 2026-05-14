@@ -570,7 +570,11 @@ function toClientState(room, viewerUserId) {
           alive: p.alive
         }))
       : null,
-    lobbyChat: room.phase === PHASE.LOBBY ? room.chatLog.lobby : null
+    lobbyChat: room.phase === PHASE.LOBBY ? room.chatLog.lobby : null,
+    dayChat: room.phase !== PHASE.LOBBY && room.game ? room.chatLog.day : null,
+    deadChat: viewer && room.game && (!viewer.alive || viewer.role === ROLE.MEDIUM)
+      ? room.chatLog.dead
+      : null
   };
 }
 
@@ -1599,7 +1603,7 @@ function handleChat(room, socket, channel, text) {
       return reject(socket, '낮 채팅 시간이 아니거나 사망했습니다.');
     }
     pushChat(room, 'day', msg);
-    broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg }, p => p.alive);
+    broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
   } else if (channel === 'mafia') {
     if (room.phase !== PHASE.NIGHT || !player.alive) return reject(socket, '마피아 채팅 불가');
     if (player.role !== ROLE.MAFIA && !player.joinedMafiaChat) return reject(socket, '권한 없음');

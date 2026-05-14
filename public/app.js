@@ -551,17 +551,15 @@ function renderFromState() {
   renderM42Chrome();
   if (state.phaseRemainingMs != null) startLocalTimer(state.phaseRemainingMs);
 
+  if (Array.isArray(state.dayChat)) chatStore.day = state.dayChat;
+  if (Array.isArray(state.deadChat)) chatStore.dead = state.deadChat;
+
   if (state.myRoleLabel && !state.myRole) {
     const badge = $('#my-role-badge');
     if (badge) badge.textContent = `내 직업: ${state.myRoleLabel}`;
   }
 
   renderMyRoleSidebar();
-
-  const me = state.players.find(p => p.id === state.myPlayerId);
-  if (me && !me.alive && state.canDeadChatSend && activeChatChannel === 'day') {
-    activeChatChannel = 'dead';
-  }
 
   if (state.dawnAnnouncements && state.dawnAnnouncements.length) {
     $('#dawn-announcements').innerHTML = state.dawnAnnouncements.map(a => `<div>${a}</div>`).join('');
@@ -1053,7 +1051,7 @@ function renderActionPanel() {
   const me = state.players.find(p => p.id === state.myPlayerId);
   if (!me || !me.alive) {
     hint.textContent = state.canDeadChatSend
-      ? '사망자 채팅에서 다른 사망자와 대화할 수 있습니다.'
+      ? '낮 채팅은 볼 수 있습니다. 사망자 채팅에서 다른 사망자와 대화하세요.'
       : '사망하여 능력/투표를 사용할 수 없습니다.';
     return;
   }
@@ -1220,8 +1218,10 @@ function updateChatTabs() {
   });
 
   const readOnlyDead = activeChatChannel === 'dead' && state.canDeadChatView && !state.canDeadChatSend;
+  const me = state.players.find(p => p.id === state.myPlayerId);
+  const deadViewDay = activeChatChannel === 'day' && me && !me.alive;
   const canType = (
-    (activeChatChannel === 'day' && (state.phase === 'dawn' || state.phase === 'day_chat')) ||
+    (activeChatChannel === 'day' && (state.phase === 'dawn' || state.phase === 'day_chat') && me && me.alive) ||
     (activeChatChannel === 'mafia' && state.phase === 'night' && state.canMafiaChat) ||
     (activeChatChannel === 'dead' && state.canDeadChatView && state.canDeadChatSend) ||
     (activeChatChannel === 'lastWords' && state.phase === 'last_words' && state.myPlayerId === state.executionCandidateId)
@@ -1229,9 +1229,11 @@ function updateChatTabs() {
   const inputEnabled = canType && !readOnlyDead;
   $('#chat-input').disabled = !inputEnabled;
   $('#btn-send-chat').disabled = !inputEnabled;
-  $('#chat-input').placeholder = readOnlyDead
-    ? '사망자만 메시지를 보낼 수 있습니다.'
-    : (inputEnabled ? '메시지 입력...' : '이 채널에서는 지금 채팅할 수 없습니다');
+  $('#chat-input').placeholder = deadViewDay
+    ? '사망자는 낮 채팅을 볼 수만 있습니다.'
+    : readOnlyDead
+      ? '사망자만 메시지를 보낼 수 있습니다.'
+      : (inputEnabled ? '메시지 입력...' : '이 채널에서는 지금 채팅할 수 없습니다');
 
   renderChat();
 }

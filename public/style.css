@@ -3355,28 +3355,63 @@ body.anim-reporter-reveal #phase-overlay {
 @media (max-width: 980px) {
   .m42-layout.game-layout {
     grid-template-columns: 1fr;
-  }
-
-  .m42-side-left {
-    order: 2;
-  }
-
-  .m42-game-shell .chat-panel {
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    flex: 1 1 auto;
     min-height: 0;
   }
 
   .m42-center {
     order: 1;
-    min-height: 0;
+    flex: 1 1 auto;
+    min-height: min(58dvh, 560px);
+    max-height: none;
+  }
+
+  .m42-phase-banner {
+    padding: 6px 8px;
+  }
+
+  .m42-banner-main {
+    font-size: 0.92rem;
+  }
+
+  .m42-banner-sub {
+    font-size: 0.72rem;
+    margin-top: 2px;
+  }
+
+  .m42-game-shell .m42-chat-panel {
+    flex: 1 1 auto;
+    min-height: min(46dvh, 480px);
+  }
+
+  .m42-game-shell .m42-chat-log {
+    flex: 1 1 auto;
+    min-height: 220px;
+  }
+
+  .m42-side-left {
+    order: 2;
+    flex: 0 0 auto;
+    max-height: 26dvh;
+    overflow-y: auto;
+  }
+
+  .m42-role-portrait-wrap {
+    height: clamp(110px, 16dvh, 180px);
   }
 
   .m42-side-right {
     order: 3;
+    flex: 0 0 auto;
+    max-height: 24dvh;
+    overflow: hidden;
   }
 
   .m42-player-grid {
     grid-template-columns: repeat(3, 1fr);
-    max-height: none;
+    max-height: 18dvh;
+    overflow-y: auto;
   }
 
   .m42-topbar {
@@ -3388,5 +3423,35 @@ body.anim-reporter-reveal #phase-overlay {
   .m42-topbar-right,
   .m42-phase-hud {
     justify-content: center;
+  }
+}
+
+@media (max-width: 600px) {
+  body:has(#game-screen.active) #app {
+    padding: 4px 6px;
+  }
+
+  .m42-center {
+    min-height: 62dvh;
+  }
+
+  .m42-game-shell .m42-chat-panel {
+    min-height: 52dvh;
+  }
+
+  .m42-game-shell .m42-chat-log {
+    min-height: 280px;
+  }
+
+  .m42-side-left {
+    max-height: 22dvh;
+  }
+
+  .m42-side-right {
+    max-height: 20dvh;
+  }
+
+  .m42-role-portrait-wrap {
+    height: clamp(96px, 14dvh, 150px);
   }
 }
