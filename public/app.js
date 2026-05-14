@@ -801,8 +801,8 @@ function renderM42Chrome() {
       bannerMain.textContent = state.myRoleLabel ? `당신의 직업은 ${state.myRoleLabel} 입니다` : '밤이 되었습니다';
       bannerSub.textContent = '능력을 사용할 대상을 선택하세요';
     } else if (state.phase === 'dawn') {
-      bannerMain.textContent = '낮이 밝았습니다';
-      bannerSub.textContent = '밤의 결과를 확인하며 대화할 수 있습니다';
+      bannerMain.textContent = '아침이 밝았습니다';
+      bannerSub.textContent = '밤 결과 확인 중입니다. 잠시 대화할 수 없습니다.';
     } else if (state.phase === 'day_chat') {
       bannerMain.textContent = dayIdx > 0 ? `${dayIdx}번째 낮` : '낮 토론';
       bannerSub.textContent = '대화를 통해 추리하세요';
@@ -848,6 +848,28 @@ function renderMyRoleSidebar() {
 }
 
 let phaseTransitionTimer = null;
+let skillNoticeTimer = null;
+
+function showSkillNotice(data) {
+  const el = $('#skill-notice');
+  const badge = $('#skill-notice-badge');
+  const title = $('#skill-notice-title');
+  const body = $('#skill-notice-body');
+  if (!el || !badge || !title || !body || !data) return;
+
+  const isPublic = data.scope === 'public';
+  el.classList.toggle('is-public', isPublic);
+  el.classList.toggle('is-private', !isPublic);
+  badge.textContent = isPublic ? '전체 공지' : '나만 보는 정보';
+  title.textContent = data.title || '능력 정보';
+  body.textContent = data.message || '';
+  el.hidden = false;
+
+  clearTimeout(skillNoticeTimer);
+  skillNoticeTimer = setTimeout(() => {
+    el.hidden = true;
+  }, isPublic ? 6000 : 9000);
+}
 
 function showPhaseTransition(kind, title, caption, index = 1) {
   const overlay = $('#phase-transition-overlay');
@@ -984,6 +1006,7 @@ function renderPlayerGrid() {
     const guessedLabel = formatGuessedRoleLabel(note.guessedRole);
     let cls = 'player-card';
     if (isDead) cls += ' dead';
+    if (state.phase === 'night' && state.myRole === ROLE.MEDIUM && isDead && canSelectPlayerSlot(p)) cls += ' medium-target';
     if (selectedTargetId === p.id) cls += ' selected';
     if (isCandidate) cls += ' candidate';
     if (isSelf) cls += ' is-self';
@@ -1100,8 +1123,10 @@ function renderActionPanel() {
     } else {
       hint.textContent = '최후의 반론을 듣고 있습니다.';
     }
-  } else if (state.phase === 'dawn' || state.phase === 'day_chat') {
-    hint.textContent = state.phase === 'dawn' ? '밤 결과를 확인하며 대화하세요.' : '자유롭게 토론하세요.';
+  } else if (state.phase === 'dawn') {
+    hint.textContent = '밤 결과를 확인하는 중입니다. 대화는 낮 토론부터 가능합니다.';
+  } else if (state.phase === 'day_chat') {
+    hint.textContent = '자유롭게 토론하세요.';
   } else {
     hint.textContent = '';
   }
@@ -1125,12 +1150,10 @@ function emitNightAction(event) {
     const target = state.players.find(p => p.id === selectedTargetId);
     if (!target || target.alive) return showToast('사망자만 성불할 수 있습니다.');
     socket.emit('mediumPurify', { targetId: selectedTargetId });
-    showToast('성불 대상을 선택했습니다.');
     runAnimation('anim-investigate', { targetId: selectedTargetId });
     return;
   }
   socket.emit(event, { targetId: selectedTargetId });
-  showToast('능력 대상을 선택했습니다.');
   const animMap = {
     mafiaVote: { anim: 'anim-mafia-kill', cardFx: 'fx-target-kill' },
     doctorHeal: { anim: 'anim-doctor-heal', cardFx: 'fx-target-heal' },
@@ -1149,7 +1172,9 @@ function onPlayerCardClick(id) {
 
   if (state.phase === 'day_vote' && me && me.alive && player && player.alive) {
     const isCancel = state.myDayVoteTarget === id;
+    state.myDayVoteTarget = isCancel ? null : id;
     socket.emit('dayVote', { targetId: isCancel ? null : id });
+    renderPlayerGrid();
     runAnimation('anim-vote', { targetId: id, cardFx: 'fx-target-vote', silent: isCancel });
     showToast(isCancel ? '투표를 취소했습니다.' : `${player.nickname}에게 투표했습니다.`);
     return;
@@ -1213,7 +1238,7 @@ function updateChatTabs() {
     tabDay.textContent = '밤 (낮 채팅 비활성)';
     if (state.canMafiaChat && activeChatChannel === 'day') activeChatChannel = 'mafia';
   } else if (state.phase === 'dawn' || state.phase === 'day_chat') {
-    tabDay.textContent = '낮 채팅';
+    tabDay.textContent = state.phase === 'dawn' ? '아침 (대화 불가)' : '낮 채팅';
     if (activeChatChannel === 'mafia') activeChatChannel = 'day';
   } else if (state.phase === 'last_words') {
     if (activeChatChannel !== 'lastWords') activeChatChannel = 'lastWords';
@@ -1233,7 +1258,7 @@ function updateChatTabs() {
   const me = state.players.find(p => p.id === state.myPlayerId);
   const deadViewDay = activeChatChannel === 'day' && me && !me.alive;
   const canType = (
-    (activeChatChannel === 'day' && (state.phase === 'dawn' || state.phase === 'day_chat') && me && me.alive) ||
+    (activeChatChannel === 'day' && state.phase === 'day_chat' && me && me.alive) ||
     (activeChatChannel === 'mafia' && state.phase === 'night' && state.canMafiaChat) ||
     (activeChatChannel === 'dead' && state.canDeadChatView && state.canDeadChatSend) ||
     (activeChatChannel === 'lastWords' && state.phase === 'last_words' && state.myPlayerId === state.executionCandidateId)
@@ -1243,7 +1268,9 @@ function updateChatTabs() {
   $('#btn-send-chat').disabled = !inputEnabled;
   $('#chat-input').placeholder = deadViewDay
     ? '사망자는 낮 채팅을 볼 수만 있습니다.'
-    : readOnlyDead
+    : (state.phase === 'dawn' && activeChatChannel === 'day')
+      ? '아침에는 대화할 수 없습니다. 잠시만 기다리세요.'
+      : readOnlyDead
       ? '사망자만 메시지를 보낼 수 있습니다.'
       : (inputEnabled ? '메시지 입력...' : '이 채널에서는 지금 채팅할 수 없습니다');
 
@@ -1295,19 +1322,36 @@ function escapeHtml(s) {
 
 function appendPrivateInfo(data) {
   const el = $('#private-info');
+  if (!el || !data) return;
   let line = '';
+  const actionLabels = {
+    mafia: '암살 투표',
+    spy: '스파이 조사',
+    police: '경찰 조사',
+    doctor: '치료',
+    reporter: '기자 취재',
+    medium: '성불'
+  };
   switch (data.type) {
     case 'role': line = `배정된 직업: ${data.roleLabel}`; break;
     case 'police': line = `경찰 조사: ${data.targetName} → ${data.isMafia ? '마피아' : '마피아 아님'}`; break;
     case 'spy': line = `스파이 조사: ${data.targetName} → ${data.roleLabel}${data.joinedMafiaChat ? ' (마피아 채팅 합류)' : ''}`; break;
     case 'reporter': line = `취재 결과: ${data.targetName} → ${data.roleLabel} (아침에 공표)`; break;
     case 'medium': line = `성불 결과: ${data.targetName} → ${data.roleLabel}`; break;
-    case 'heal': line = `치료 완료: ${data.targetName}`; break;
+    case 'heal':
+      line = data.saved
+        ? `치료 성공: ${data.targetName} (공격을 막아냄)`
+        : `치료 완료: ${data.targetName}`;
+      break;
     case 'inherit': line = `도굴꾼 계승: ${data.fromName}의 ${data.roleLabel}`; break;
-    case 'actionConfirm': line = `능력 대상 선택됨`; break;
+    case 'actionConfirm':
+      line = data.targetName
+        ? `${actionLabels[data.action] || '능력'} 대상: ${data.targetName}`
+        : '능력 대상 선택됨';
+      break;
     default: line = JSON.stringify(data);
   }
-  el.innerHTML += `<div>${line}</div>`;
+  el.innerHTML += `<div class="private-info-line">${escapeHtml(line)}</div>`;
 }
 
 /* ─── Socket events ─────────────────────────────────────────────────────────── */
@@ -1385,16 +1429,17 @@ socket.on('phaseChanged', (data) => {
     const idx = data.nightIndex || (state ? state.nightIndex : 0) || 1;
     showPhaseTransition('night', `${idx}번째 밤`, '밤이 되었습니다', idx);
   } else if (data.phase === 'dawn') {
-    runAnimation('anim-dawn-rise');
-    AudioManager.playSFX('day');
-    activeChatChannel = 'day';
-  } else if (data.phase === 'day_chat') {
-    if (typeof clearMotionQueue === 'function') clearMotionQueue();
-    runAnimation('anim-dawn-rise', { silent: true });
     AudioManager.playSFX('day');
     activeChatChannel = 'day';
     const idx = data.dayIndex || (state ? state.dayIndex : 0) || 1;
-    showPhaseTransition('day', `${idx}번째 낮`, '대화를 통해 추리하세요', idx);
+    showPhaseTransition('day', '아침이 밝았습니다', '밤의 결과를 확인하세요', idx);
+    updateChatTabs();
+  } else if (data.phase === 'day_chat') {
+    if (typeof clearMotionQueue === 'function') clearMotionQueue();
+    AudioManager.playSFX('day');
+    activeChatChannel = 'day';
+    showToast('낮 토론이 시작되었습니다. 이제 대화할 수 있습니다.');
+    updateChatTabs();
   } else if (data.phase === 'day_vote') {
     runAnimation('anim-vote', { silent: true });
     showVoteTimeOverlay();
@@ -1427,9 +1472,64 @@ socket.on('gameMotionBatch', (data) => {
   });
 });
 
+socket.on('skillNotice', (data) => {
+  showSkillNotice(data);
+  if (data && data.scope === 'public') showToast(data.message || data.title);
+});
+
 socket.on('privateInfo', (data) => {
   if (!data) return;
   appendPrivateInfo(data);
+  if (data.type === 'heal') {
+    showSkillNotice({
+      scope: 'private',
+      kind: 'doctor',
+      title: data.saved ? '치료 성공' : '치료 완료',
+      message: data.saved
+        ? `${data.targetName}님을 치료해 살렸습니다!`
+        : `${data.targetName}님에게 치료했습니다.`
+    });
+  } else if (data.type === 'medium') {
+    showSkillNotice({
+      scope: 'private',
+      kind: 'medium',
+      title: '영매 성불 결과',
+      message: `${data.targetName} → ${data.roleLabel}`
+    });
+  } else if (data.type === 'police') {
+    showSkillNotice({
+      scope: 'private',
+      kind: 'police',
+      title: '경찰 조사 결과',
+      message: data.isMafia
+        ? `${data.targetName}님은 마피아입니다.`
+        : `${data.targetName}님은 마피아가 아닙니다.`
+    });
+  } else if (data.type === 'spy') {
+    showSkillNotice({
+      scope: 'private',
+      kind: 'spy',
+      title: '스파이 조사 결과',
+      message: data.joinedMafiaChat
+        ? `${data.targetName} — 마피아 (마피아 채팅 합류)`
+        : `${data.targetName}의 직업: ${data.roleLabel}`
+    });
+  } else if (data.type === 'reporter') {
+    showSkillNotice({
+      scope: 'private',
+      kind: 'reporter',
+      title: '기자 취재 결과',
+      message: `${data.targetName} → ${data.roleLabel} (아침에 전원 공표)`
+    });
+  } else if (data.type === 'actionConfirm' && data.targetName) {
+    const labels = { mafia: '암살', spy: '조사', police: '조사', doctor: '치료', reporter: '취재', medium: '성불' };
+    showSkillNotice({
+      scope: 'private',
+      kind: data.action,
+      title: `${labels[data.action] || '능력'} 대상 지정`,
+      message: data.targetName
+    });
+  }
   if (data.type === 'role' || data.type === 'inherit') {
     if (state) {
       state.myRole = data.role;

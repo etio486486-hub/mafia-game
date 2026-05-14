@@ -2951,6 +2951,74 @@ body.phase-night .m42-banner-main {
   cursor: not-allowed;
 }
 
+.m42-player-grid .player-card.dead.medium-target {
+  opacity: 0.72;
+  cursor: pointer;
+  filter: grayscale(0.45);
+}
+
+.m42-player-grid .player-card.dead.medium-target.selected {
+  border-color: rgba(155, 89, 182, 0.75);
+  box-shadow: 0 0 0 2px rgba(155, 89, 182, 0.35);
+}
+
+.skill-notice {
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.42);
+  animation: fadeIn 0.25s ease;
+}
+
+.skill-notice.is-private {
+  border-color: rgba(62, 207, 142, 0.45);
+  background: rgba(20, 48, 36, 0.72);
+}
+
+.skill-notice.is-public {
+  border-color: rgba(201, 162, 74, 0.5);
+  background: rgba(48, 36, 16, 0.78);
+}
+
+.skill-notice-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-bottom: 6px;
+  color: #dfffe8;
+  background: rgba(62, 207, 142, 0.18);
+}
+
+.skill-notice.is-public .skill-notice-badge {
+  color: #f0d9a8;
+  background: rgba(201, 162, 74, 0.18);
+}
+
+.skill-notice-title {
+  display: block;
+  font-size: 0.92rem;
+  margin-bottom: 4px;
+}
+
+.skill-notice-body {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: #e8edf5;
+}
+
+.private-info-line + .private-info-line {
+  margin-top: 6px;
+}
+
+.private-info-heading {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
 .m42-player-grid .player-card.is-self {
   border-color: rgba(62, 207, 142, 0.45);
 }

@@ -205,7 +205,7 @@ const TIMERS = {
   [PHASE.DAY_VOTE]: 15000,
   [PHASE.LAST_WORDS]: 10000,
   [PHASE.EXECUTION_VOTE]: 10000,
-  [PHASE.DAWN]: 8000
+  [PHASE.DAWN]: 5000
 };
 
 const ROLE_LABELS = {
@@ -534,7 +534,10 @@ function resetNightActions(room) {
     policeTarget: null,
     doctorTarget: null,
     reporterTarget: null,
-    mediumTarget: null
+    mediumTarget: null,
+    spyResolved: false,
+    policeResolved: false,
+    mediumResolved: false
   };
   room.game.mafiaVotes = {};
 }
@@ -657,6 +660,157 @@ function broadcastAnimation(room, animClass, filterFn) {
   broadcastToRoom(room, 'animation', { className: animClass }, filterFn);
 }
 
+function emitSkillNotice(userID, payload) {
+  const sess = sessions.get(userID);
+  if (sess && sess.socketId) {
+    io.to(sess.socketId).emit('skillNotice', payload);
+  }
+}
+
+function deliverPoliceResult(room, police, targetId) {
+  const target = getPlayerById(room, targetId);
+  if (!police || !target || !police.alive) return;
+  const isMafia = isMafiaRole(target.role);
+  emitMotionToUser(police.userID, isMafia ? {
+    type: 'police_mafia',
+    title: '경찰 수색',
+    message: `${target.nickname}님은 마피아입니다.`,
+    situation: '[상황] 경찰 조사 결과'
+  } : {
+    type: 'police_innocent',
+    title: '경찰 조사',
+    message: `${target.nickname}님은 마피아가 아닙니다.`,
+    situation: '밤에 조사한 플레이어가 마피아가 아닐 경우'
+  });
+  const sess = sessions.get(police.userID);
+  if (sess && sess.socketId) {
+    io.to(sess.socketId).emit('privateInfo', {
+      type: 'police',
+      targetId,
+      targetName: target.nickname,
+      isMafia,
+      instant: true
+    });
+  }
+  emitSkillNotice(police.userID, {
+    scope: 'private',
+    kind: 'police',
+    title: '경찰 조사 결과',
+    message: isMafia
+      ? `${target.nickname}님은 마피아입니다.`
+      : `${target.nickname}님은 마피아가 아닙니다.`
+  });
+  if (room.game && room.game.nightActions) room.game.nightActions.policeResolved = true;
+}
+
+function deliverSpyResult(room, spy, targetId) {
+  const target = getPlayerById(room, targetId);
+  if (!spy || !target || !spy.alive) return;
+  const resultRole = target.role;
+  const isMafia = isMafiaRole(resultRole);
+  if (isMafia) spy.joinedMafiaChat = true;
+  emitMotionToUser(spy.userID, isMafia ? {
+    type: 'spy_contact',
+    title: '스파이 접선',
+    message: '마피아와 접선했습니다.',
+    situation: '[상황] 스파이와 마피아가 접선을 함'
+  } : {
+    type: 'spy_investigate',
+    title: '스파이 조사',
+    message: `그 사람의 직업은 ${ROLE_LABELS[resultRole]}입니다.`,
+    situation: '[상황] 밤에 조사한 플레이어의 직업을 확인한 경우'
+  });
+  const sess = sessions.get(spy.userID);
+  if (sess && sess.socketId) {
+    io.to(sess.socketId).emit('privateInfo', {
+      type: 'spy',
+      targetId,
+      targetName: target.nickname,
+      role: resultRole,
+      roleLabel: ROLE_LABELS[resultRole],
+      joinedMafiaChat: isMafia,
+      instant: true
+    });
+  }
+  emitSkillNotice(spy.userID, {
+    scope: 'private',
+    kind: 'spy',
+    title: '스파이 조사 결과',
+    message: isMafia
+      ? `${target.nickname} — 마피아 (마피아 채팅 합류)`
+      : `${target.nickname}의 직업: ${ROLE_LABELS[resultRole]}`
+  });
+  if (room.game && room.game.nightActions) room.game.nightActions.spyResolved = true;
+  broadcastState(room);
+}
+
+function deliverReporterScoop(room, reporter, targetId) {
+  const target = getPlayerById(room, targetId);
+  if (!reporter || !target || reporter.reporterUsed) return;
+  if (!room.game || room.game.nightIndex < 2) return;
+  reporter.reporterUsed = true;
+  room.pendingReporterRevealData = {
+    targetId: target.id,
+    targetName: target.nickname,
+    role: target.role,
+    roleLabel: ROLE_LABELS[target.role]
+  };
+  room.pendingReporterReveal = `기자 취재: ${target.nickname}의 직업은 [${ROLE_LABELS[target.role]}] 입니다.`;
+  emitMotionToUser(reporter.userID, {
+    type: 'reporter_scoop',
+    title: '기자 취재',
+    message: `그 사람의 직업은 ${ROLE_LABELS[target.role]}입니다.`,
+    situation: '[상황] 취재 결과는 다음 날 아침에 공표됩니다.'
+  });
+  const sess = sessions.get(reporter.userID);
+  if (sess && sess.socketId) {
+    io.to(sess.socketId).emit('privateInfo', {
+      type: 'reporter',
+      targetId,
+      targetName: target.nickname,
+      role: target.role,
+      roleLabel: ROLE_LABELS[target.role],
+      instant: true
+    });
+  }
+  emitSkillNotice(reporter.userID, {
+    scope: 'private',
+    kind: 'reporter',
+    title: '기자 취재 결과',
+    message: `${target.nickname} → ${ROLE_LABELS[target.role]} (아침에 전원 공표)`
+  });
+  broadcastAnimation(room, 'anim-reporter-flash', p => p.id === reporter.id);
+}
+
+function deliverMediumResult(room, medium, targetId) {
+  const target = getPlayerById(room, targetId);
+  if (!medium || !target || !medium.alive || target.alive) return;
+  emitMotionToUser(medium.userID, {
+    type: 'spy_investigate',
+    title: '영매 성불',
+    message: `${target.nickname}의 직업은 ${ROLE_LABELS[target.role]}입니다.`,
+    situation: '[상황] 성불로 사망자의 직업을 확인한 경우'
+  });
+  const sess = sessions.get(medium.userID);
+  if (sess && sess.socketId) {
+    io.to(sess.socketId).emit('privateInfo', {
+      type: 'medium',
+      targetId,
+      targetName: target.nickname,
+      role: target.role,
+      roleLabel: ROLE_LABELS[target.role],
+      instant: true
+    });
+  }
+  emitSkillNotice(medium.userID, {
+    scope: 'private',
+    kind: 'medium',
+    title: '영매 성불 결과',
+    message: `${target.nickname} → ${ROLE_LABELS[target.role]}`
+  });
+  if (room.game && room.game.nightActions) room.game.nightActions.mediumResolved = true;
+}
+
 function emitMotionToUser(userID, motion) {
   const sess = sessions.get(userID);
   if (sess && sess.socketId) io.to(sess.socketId).emit('gameMotion', motion);
@@ -673,7 +827,16 @@ function queueDawnMotion(room, motion) {
 
 function flushDawnMotions(room) {
   if (!room.pendingMotions || !room.pendingMotions.length) return;
-  broadcastToRoom(room, 'gameMotionBatch', { motions: [...room.pendingMotions] });
+  const motions = [...room.pendingMotions];
+  broadcastToRoom(room, 'gameMotionBatch', { motions });
+  for (const motion of motions) {
+    broadcastToRoom(room, 'skillNotice', {
+      scope: 'public',
+      kind: motion.type,
+      title: motion.title || '밤 사건',
+      message: motion.message || ''
+    });
+  }
   room.pendingMotions = [];
 }
 
@@ -1032,19 +1195,15 @@ function resolveNight(room) {
   const deaths = [];
   room.pendingMotions = room.pendingMotions || [];
 
-  // 1) Doctor heal
+  // 1) Doctor heal target
   let healedId = null;
+  let doctor = null;
   const doctorAction = g.nightActions.doctorTarget;
   if (doctorAction) {
-    const doctor = Object.values(room.players).find(p => p.role === ROLE.DOCTOR && p.alive);
+    doctor = Object.values(room.players).find(p => p.role === ROLE.DOCTOR && p.alive);
     if (doctor) {
       healedId = doctorAction;
-      console.log(`[NIGHT][2-Heal] doctor ${doctor.nickname} -> ${playerName(room, healedId)} (healed)`);
-      const sess = sessions.get(doctor.userID);
-      if (sess && sess.socketId) {
-        io.to(sess.socketId).emit('privateInfo', { type: 'heal', targetId: healedId, targetName: playerName(room, healedId) });
-      }
-      broadcastAnimation(room, 'anim-doctor-heal');
+      console.log(`[NIGHT][2-Heal] doctor ${doctor.nickname} -> ${playerName(room, healedId)}`);
     }
   } else {
     console.log('[NIGHT][2-Heal] no doctor action');
@@ -1096,111 +1255,61 @@ function resolveNight(room) {
     console.log('[NIGHT][3-Kill] no mafia consensus target');
   }
 
+  if (healedId && doctor) {
+    const sess = sessions.get(doctor.userID);
+    if (sess && sess.socketId) {
+      io.to(sess.socketId).emit('privateInfo', {
+        type: 'heal',
+        targetId: healedId,
+        targetName: playerName(room, healedId),
+        saved: healBlockedKill
+      });
+    }
+    emitSkillNotice(doctor.userID, {
+      scope: 'private',
+      kind: 'doctor',
+      title: healBlockedKill ? '치료 성공' : '치료 완료',
+      message: healBlockedKill
+        ? `${playerName(room, healedId)}님을 치료해 공격을 막았습니다!`
+        : `${playerName(room, healedId)}님에게 치료했습니다.`
+    });
+    if (healBlockedKill) broadcastAnimation(room, 'anim-doctor-heal');
+  }
+
   // 4) Investigations
   const spyTarget = g.nightActions.spyTarget;
   if (spyTarget) {
     const spy = Object.values(room.players).find(p => p.role === ROLE.SPY && p.alive);
     const target = getPlayerById(room, spyTarget);
-    if (spy && target) {
-      const resultRole = target.role;
-      const isMafia = isMafiaRole(resultRole);
-      if (isMafia) spy.joinedMafiaChat = true;
-      console.log(`[NIGHT][4-Spy] ${spy.nickname} investigates ${target.nickname} -> ${ROLE_LABELS[resultRole]}${isMafia ? ' (joined mafia chat)' : ''}`);
-      emitMotionToUser(spy.userID, isMafia ? {
-        type: 'spy_contact',
-        title: '스파이 접선',
-        message: '접선했습니다.',
-        situation: '[상황] 스파이와 마피아가 접선을 함'
-      } : {
-        type: 'spy_investigate',
-        title: '스파이 조사',
-        message: `그 사람의 직업은 ${ROLE_LABELS[resultRole]}입니다.`,
-        situation: '[상황] 밤에 조사한 플레이어의 직업을 확인한 경우'
-      });
-      const sess = sessions.get(spy.userID);
-      if (sess && sess.socketId) {
-        io.to(sess.socketId).emit('privateInfo', {
-          type: 'spy', targetId: spyTarget, targetName: target.nickname,
-          role: resultRole, roleLabel: ROLE_LABELS[resultRole], joinedMafiaChat: isMafia
-        });
-      }
+    if (spy && target && !g.nightActions.spyResolved) {
+      g.nightActions.spyResolved = true;
+      deliverSpyResult(room, spy, spyTarget);
     }
   }
 
   const policeTarget = g.nightActions.policeTarget;
   if (policeTarget) {
     const police = Object.values(room.players).find(p => p.role === ROLE.POLICE && p.alive);
-    const target = getPlayerById(room, policeTarget);
-    if (police && target) {
-      const isMafia = isMafiaRole(target.role);
-      console.log(`[NIGHT][4-Police] ${police.nickname} investigates ${target.nickname} -> ${isMafia ? 'MAFIA' : 'NOT MAFIA'}`);
-      emitMotionToUser(police.userID, isMafia ? {
-        type: 'police_mafia',
-        title: '경찰 수색',
-        message: `${target.nickname}님은 마피아입니다.`,
-        situation: '[상황] 경찰에게 검거되었습니다.'
-      } : {
-        type: 'police_innocent',
-        title: '경찰 조사',
-        message: `${target.nickname}은 마피아가 아닙니다.`,
-        situation: '밤에 조사한 플레이어가 마피아가 아닐 경우'
-      });
-      const sess = sessions.get(police.userID);
-      if (sess && sess.socketId) {
-        io.to(sess.socketId).emit('privateInfo', {
-          type: 'police', targetId: policeTarget, targetName: target.nickname, isMafia
-        });
-      }
+    if (police && !g.nightActions.policeResolved) {
+      g.nightActions.policeResolved = true;
+      deliverPoliceResult(room, police, policeTarget);
     }
   }
 
   const reporterTarget = g.nightActions.reporterTarget;
   if (reporterTarget && g.nightIndex >= 2) {
-    const reporter = Object.values(room.players).find(p => p.role === ROLE.REPORTER && p.alive && !p.reporterUsed);
-    const target = getPlayerById(room, reporterTarget);
-    if (reporter && target) {
-      reporter.reporterUsed = true;
-      room.pendingReporterRevealData = {
-        targetId: target.id,
-        targetName: target.nickname,
-        role: target.role,
-        roleLabel: ROLE_LABELS[target.role]
-      };
-      room.pendingReporterReveal = `기자 취재: ${target.nickname}의 직업은 [${ROLE_LABELS[target.role]}] 입니다.`;
-      console.log(`[NIGHT][4-Reporter] ${reporter.nickname} scoops ${target.nickname} -> ${ROLE_LABELS[target.role]} (reveal at dawn)`);
-      emitMotionToUser(reporter.userID, {
-        type: 'reporter_scoop',
-        title: '기자 취재',
-        message: `그 사람의 직업은 ${ROLE_LABELS[target.role]}입니다.`,
-        situation: '[상황] 취재 결과는 다음 날 아침에 공표됩니다.'
-      });
-      broadcastAnimation(room, 'anim-reporter-flash');
-      const sess = sessions.get(reporter.userID);
-      if (sess && sess.socketId) {
-        io.to(sess.socketId).emit('privateInfo', {
-          type: 'reporter', targetId: reporterTarget, targetName: target.nickname,
-          role: target.role, roleLabel: ROLE_LABELS[target.role]
-        });
-      }
+    const reporter = Object.values(room.players).find(p => p.role === ROLE.REPORTER && p.alive);
+    if (reporter && !reporter.reporterUsed) {
+      deliverReporterScoop(room, reporter, reporterTarget);
     }
   }
 
   const mediumTarget = g.nightActions.mediumTarget;
   if (mediumTarget) {
     const medium = Object.values(room.players).find(p => p.role === ROLE.MEDIUM && p.alive);
-    const target = getPlayerById(room, mediumTarget);
-    if (medium && target && !target.alive) {
-      console.log(`[NIGHT][4b-Medium] ${medium.nickname} purifies ${target.nickname} -> ${ROLE_LABELS[target.role]}`);
-      const sess = sessions.get(medium.userID);
-      if (sess && sess.socketId) {
-        io.to(sess.socketId).emit('privateInfo', {
-          type: 'medium',
-          targetId: mediumTarget,
-          targetName: target.nickname,
-          role: target.role,
-          roleLabel: ROLE_LABELS[target.role]
-        });
-      }
+    if (medium && !g.nightActions.mediumResolved) {
+      g.nightActions.mediumResolved = true;
+      deliverMediumResult(room, medium, mediumTarget);
     }
   }
 
@@ -1604,6 +1713,13 @@ function recordMafiaVote(room, socket, targetId) {
   const valid = validateNightTarget(room, player, targetId);
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.mafiaVotes[player.id] = targetId;
+  emitSkillNotice(player.userID, {
+    scope: 'private',
+    kind: 'mafia',
+    title: '암살 투표',
+    message: `${playerName(room, targetId)}님을 지목했습니다.`
+  });
+  socket.emit('privateInfo', { type: 'actionConfirm', action: 'mafia', targetId, targetName: playerName(room, targetId) });
   broadcastState(room);
 }
 
@@ -1615,7 +1731,7 @@ function recordSpyInvestigate(room, socket, targetId) {
   const valid = validateNightTarget(room, player, targetId);
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.spyTarget = targetId;
-  socket.emit('privateInfo', { type: 'actionConfirm', action: 'spy', targetId });
+  deliverSpyResult(room, player, targetId);
 }
 
 function recordPoliceInvestigate(room, socket, targetId) {
@@ -1626,7 +1742,7 @@ function recordPoliceInvestigate(room, socket, targetId) {
   const valid = validateNightTarget(room, player, targetId);
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.policeTarget = targetId;
-  socket.emit('privateInfo', { type: 'actionConfirm', action: 'police', targetId });
+  deliverPoliceResult(room, player, targetId);
 }
 
 function recordDoctorHeal(room, socket, targetId) {
@@ -1637,7 +1753,13 @@ function recordDoctorHeal(room, socket, targetId) {
   const valid = validateNightTarget(room, player, targetId, { allowSelf: true });
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.doctorTarget = targetId;
-  socket.emit('privateInfo', { type: 'actionConfirm', action: 'doctor', targetId });
+  emitSkillNotice(player.userID, {
+    scope: 'private',
+    kind: 'doctor',
+    title: '치료 대상 지정',
+    message: `${playerName(room, targetId)}님에게 치료를 준비했습니다.`
+  });
+  socket.emit('privateInfo', { type: 'actionConfirm', action: 'doctor', targetId, targetName: playerName(room, targetId) });
 }
 
 function recordReporterScoop(room, socket, targetId) {
@@ -1650,7 +1772,7 @@ function recordReporterScoop(room, socket, targetId) {
   const valid = validateNightTarget(room, player, targetId);
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.reporterTarget = targetId;
-  socket.emit('privateInfo', { type: 'actionConfirm', action: 'reporter', targetId });
+  deliverReporterScoop(room, player, targetId);
 }
 
 function recordMediumPurify(room, socket, targetId) {
@@ -1661,7 +1783,7 @@ function recordMediumPurify(room, socket, targetId) {
   const valid = validateNightTarget(room, player, targetId, { aliveOnly: false, deadOnly: true });
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.mediumTarget = targetId;
-  socket.emit('privateInfo', { type: 'actionConfirm', action: 'medium', targetId });
+  deliverMediumResult(room, player, targetId);
   broadcastState(room);
 }
 
@@ -1721,7 +1843,7 @@ function handleChat(room, socket, channel, text) {
     pushChat(room, 'lobby', msg);
     broadcastToRoom(room, 'chatMessage', { channel: 'lobby', ...msg });
   } else if (channel === 'day') {
-    if (![PHASE.DAWN, PHASE.DAY_CHAT].includes(room.phase) || !player.alive) {
+    if (![PHASE.DAY_CHAT].includes(room.phase) || !player.alive) {
       return reject(socket, '낮 채팅 시간이 아니거나 사망했습니다.');
     }
     pushChat(room, 'day', msg);
