@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>마피아 게임</title>
+  <link rel="stylesheet" href="/style.css?v=21">
+  <link rel="stylesheet" href="/motions.css">
+</head>
+<body class="phase-day">
+  <div id="phase-overlay" aria-hidden="true"></div>
+  <div id="motion-overlay" hidden aria-hidden="true"></div>
+  <div id="fx-layer" class="fx-layer" aria-hidden="true"></div>
+
+  <div id="app">
+    <section id="lobby-screen" class="screen active entry-shell">
+      <div class="entry-backdrop"></div>
+      <div class="entry-panel">
+        <header class="entry-header">
+          <p class="entry-kicker">ONLINE MAFIA</p>
+          <h1>마피아 게임</h1>
+          <p class="subtitle">웹에서 친구들과 실시간 대결</p>
+        </header>
+        <div class="entry-form panel">
+          <label for="nickname">닉네임</label>
+          <input type="text" id="nickname" placeholder="닉네임 입력" maxlength="12" autocomplete="off">
+          <div class="lobby-actions">
+            <button id="btn-create" class="btn btn-primary btn-large">방 만들기</button>
+            <div class="join-row">
+              <input type="text" id="room-code" placeholder="방 코드 4자리" maxlength="4" autocomplete="off">
+              <button id="btn-join" class="btn btn-secondary">참가</button>
+            </div>
+          </div>
+          <div id="server-info" class="server-info"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="waiting-screen" class="screen room-shell">
+      <header class="room-topbar">
+        <div class="room-topbar-left">
+          <span class="room-brand">마피아 게임</span>
+          <span class="room-code-pill">방 코드 <strong id="display-room-code">----</strong></span>
+        </div>
+        <div class="room-topbar-right">
+          <button type="button" id="btn-copy-invite" class="btn btn-secondary btn-sm room-invite-btn" hidden>초대 링크</button>
+          <span class="room-count-badge" id="player-count-label">0 / 12</span>
+        </div>
+      </header>
+
+      <div class="room-layout">
+        <aside class="room-side-left">
+          <div class="room-mode-card">
+            <div class="room-mode-art"></div>
+            <div class="room-mode-body">
+              <h3>클래식 모드</h3>
+              <p>8~12인 온라인 마피아. 밤 스킬과 낮 토론·투표로 마피아를 찾아내세요.</p>
+              <ul class="room-mode-rules">
+                <li>최소 8명부터 시작</li>
+                <li>밤 30초 · 투표 15초 · 찬반/최후변론 10초</li>
+                <li>기자 취재는 2번째 밤부터</li>
+              </ul>
+            </div>
+          </div>
+          <div class="room-my-card" id="lobby-my-card"></div>
+          <div id="bot-controls" class="room-tools" hidden>
+            <p class="room-tools-title">호스트 테스트 도구</p>
+            <div class="bot-actions">
+              <button id="btn-add-bot" class="btn btn-secondary btn-sm">봇 +1</button>
+              <button id="btn-remove-bot" class="btn btn-secondary btn-sm">봇 -1</button>
+              <button id="btn-fill-bots" class="btn btn-secondary btn-sm">8명 채우기</button>
+            </div>
+            <p id="bot-count-label" class="hint">봇 0명</p>
+          </div>
+        </aside>
+
+        <main class="room-center">
+          <div class="room-chat-panel">
+            <div class="room-chat-banner">로비 채팅 · 게임 시작 전 자유 대화</div>
+            <ul id="lobby-chat-messages" class="lobby-chat-messages chat-messages"></ul>
+            <div class="lobby-chat-input-row chat-input-row">
+              <input type="text" id="lobby-chat-input" placeholder="메시지 입력..." autocomplete="off">
+              <button id="btn-send-lobby-chat" class="btn btn-secondary">전송</button>
+            </div>
+          </div>
+        </main>
+
+        <aside class="room-side-right">
+          <div class="room-slots-header">
+            <span>플레이어</span>
+            <span class="room-slots-sub">대기 중</span>
+          </div>
+          <div id="lobby-player-slots" class="lobby-player-slots"></div>
+          <div class="waiting-footer">
+            <button id="btn-start" class="btn btn-primary btn-large" disabled>게임 시작</button>
+            <p id="host-hint" class="hint">호스트만 게임을 시작할 수 있습니다.</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="game-screen" class="screen m42-game-shell">
+      <div class="m42-bg-layer" id="game-bg-layer" aria-hidden="true"></div>
+
+      <header class="m42-topbar">
+        <div class="m42-topbar-left">
+          <span class="m42-mode-label">클래식 모드</span>
+          <span class="m42-room-pill" id="game-room-code">----</span>
+        </div>
+        <div class="m42-phase-hud">
+          <div class="m42-phase-icon" id="phase-icon" aria-hidden="true">🌙</div>
+          <div class="m42-phase-text">
+            <span id="phase-index-label">대기</span>
+            <span id="phase-label" class="m42-phase-sub">로비</span>
+          </div>
+          <div class="m42-timer-ornate">
+            <button id="btn-time-shorten" class="btn-time m42-time-btn" title="시간 10초 단축" disabled>−</button>
+            <span id="timer-label">--:--</span>
+            <button id="btn-time-extend" class="btn-time m42-time-btn" title="시간 10초 연장" disabled>+</button>
+          </div>
+        </div>
+        <div class="m42-topbar-right">
+          <span class="m42-alive-pill" id="alive-count-top">0/0</span>
+        </div>
+      </header>
+
+      <div class="m42-layout game-layout">
+        <aside class="m42-side-left side-panel side-left">
+          <div class="m42-role-stage" id="my-role-sidebar">
+            <div class="m42-role-portrait-wrap" id="my-role-portrait"></div>
+            <div class="m42-role-meta">
+              <span id="my-role-name-line" class="m42-role-name">직업 미배정</span>
+              <span id="my-role-team-line" class="m42-role-team">-</span>
+            </div>
+          </div>
+          <div class="m42-tip-box" id="role-tip-box">
+            <span class="m42-tip-icon">💡</span>
+            <p id="role-tip-text">게임이 시작되면 직업 팁이 표시됩니다.</p>
+          </div>
+          <div id="action-panel" class="m42-skill-panel action-panel">
+            <p id="action-hint" class="m42-skill-hint hint">대상을 선택하세요.</p>
+            <div id="action-buttons" class="m42-skill-buttons action-buttons"></div>
+          </div>
+          <details class="m42-fold info-card role-guide-card">
+            <summary>직업 도감</summary>
+            <div id="my-role-detail" class="role-detail-current"></div>
+            <div id="role-guide-list" class="role-encyclopedia"></div>
+          </details>
+          <div id="dawn-announcements" class="announcements info-card m42-fold"></div>
+          <div id="private-info" class="private-info info-card m42-fold"></div>
+          <span id="alive-count-label" hidden></span>
+          <div id="my-role-badge" hidden></div>
+        </aside>
+
+        <main class="m42-center game-center">
+          <div class="m42-phase-banner" id="phase-status-banner">
+            <p id="phase-banner-main" class="m42-banner-main">게임 준비</p>
+            <p id="phase-banner-sub" class="m42-banner-sub">플레이어를 기다리는 중</p>
+          </div>
+          <div class="m42-chat-panel chat-panel">
+            <div class="m42-chat-tabs chat-tabs">
+              <button class="chat-tab active" data-channel="day" id="tab-day">낮</button>
+              <button class="chat-tab" data-channel="mafia" id="tab-mafia" hidden>마피아</button>
+              <button class="chat-tab" data-channel="dead" id="tab-dead" hidden>사망자</button>
+              <button class="chat-tab" data-channel="lastWords" id="tab-lastwords" hidden>최후변론</button>
+            </div>
+            <ul id="chat-messages" class="m42-chat-log chat-messages"></ul>
+            <div class="m42-chat-input chat-input-row">
+              <input type="text" id="chat-input" placeholder="메시지 입력..." autocomplete="off">
+              <button id="btn-send-chat" class="btn btn-secondary m42-send-btn">▶</button>
+            </div>
+          </div>
+        </main>
+
+        <aside class="m42-side-right side-panel side-right">
+          <div class="m42-grid-header">
+            <span>플레이어</span>
+            <span id="player-grid-count" class="m42-grid-count"></span>
+          </div>
+          <div id="player-grid" class="m42-player-grid player-grid player-grid-side"></div>
+        </aside>
+      </div>
+
+      <div id="vote-time-overlay" class="vote-phase-overlay" hidden aria-hidden="true">
+        <div class="vote-phase-card">
+          <img id="vote-time-img" class="vote-phase-img" src="" alt="">
+          <div class="vote-phase-text">
+            <h2>투표 시간</h2>
+            <p>의심되는 사람을 투표하세요.</p>
+          </div>
+        </div>
+      </div>
+
+      <div id="vote-results-overlay" class="vote-results-overlay" hidden aria-hidden="true">
+        <div class="vote-results-panel">
+          <h2 class="vote-results-title">투표 결과</h2>
+          <ul id="vote-results-list" class="vote-results-list"></ul>
+        </div>
+      </div>
+
+      <div id="execution-vote-overlay" class="execution-vote-overlay" hidden aria-hidden="true">
+        <div class="execution-vote-backdrop"></div>
+        <div class="execution-vote-panel">
+          <p class="execution-vote-hint">처형에 찬성 또는 반대하세요.</p>
+          <button type="button" class="btn btn-danger btn-large" id="btn-execution-yes">찬성</button>
+          <button type="button" class="btn btn-secondary btn-large" id="btn-execution-no">반대</button>
+        </div>
+      </div>
+
+      <div id="phase-transition-overlay" class="phase-transition-overlay" hidden aria-hidden="true">
+        <div class="phase-transition-card">
+          <img id="phase-transition-img" class="phase-transition-img" src="" alt="">
+          <div class="phase-transition-text">
+            <h2 id="phase-transition-title"></h2>
+            <p id="phase-transition-caption"></p>
+          </div>
+        </div>
+      </div>
+
+      <div id="reporter-reveal-overlay" class="reporter-reveal-overlay" hidden aria-hidden="true">
+        <div class="reporter-reveal-backdrop"></div>
+        <div class="reporter-reveal-panel reporter-reveal-flash">
+          <p class="reporter-reveal-kicker">특종 보도</p>
+          <p class="reporter-reveal-headline">기자 취재 결과 공표</p>
+          <div class="reporter-reveal-scene">
+            <img src="/assets/motions/reporter_scoop.png?v=3" alt="" class="reporter-reveal-art">
+          </div>
+          <p id="reporter-reveal-target" class="reporter-reveal-target"></p>
+          <div id="reporter-reveal-role-card" class="reporter-reveal-role-card"></div>
+          <button type="button" class="btn btn-primary btn-large reporter-reveal-close" id="btn-reporter-reveal-close">확인</button>
+        </div>
+      </div>
+
+      <div id="role-reveal-overlay" class="role-reveal-overlay" hidden aria-hidden="true">
+        <div class="role-reveal-backdrop"></div>
+        <div class="role-reveal-panel">
+          <p class="role-reveal-kicker" id="role-reveal-kicker">당신의 직업은</p>
+          <div class="role-reveal-card" id="role-reveal-card"></div>
+          <p class="role-reveal-desc" id="role-reveal-desc"></p>
+          <button type="button" class="btn btn-secondary role-reveal-close" id="btn-role-reveal-close">닫기</button>
+        </div>
+      </div>
+
+      <div id="player-memo-overlay" class="player-memo-overlay player-role-picker-overlay" hidden aria-hidden="true">
+        <div class="player-memo-backdrop"></div>
+        <div class="player-memo-panel player-role-picker-panel">
+          <h3 id="player-memo-title" class="player-memo-title">직업 유추</h3>
+          <p class="player-memo-hint">유추할 직업을 누르세요</p>
+          <div id="player-memo-roles" class="player-memo-roles player-role-picker-grid"></div>
+          <div class="player-memo-actions">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-player-memo-clear">유추 취소</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-player-memo-close">닫기</button>
+          </div>
+          <textarea id="player-memo-text" class="player-memo-text" hidden></textarea>
+        </div>
+      </div>
+    </section>
+
+    <section id="gameover-screen" class="screen">
+      <div class="panel gameover-panel">
+        <h2 id="gameover-title">게임 종료</h2>
+        <p id="gameover-message"></p>
+        <ul id="gameover-roles" class="player-list"></ul>
+        <div class="gameover-actions">
+          <button id="btn-new-game" class="btn btn-primary btn-large" hidden>새 게임 시작</button>
+          <p id="gameover-hint" class="hint">호스트가 새 게임을 시작할 때까지 대기합니다.</p>
+        </div>
+      </div>
+    </section>
+
+    <div id="reconnect-banner" class="reconnect-banner" hidden>재연결 중...</div>
+    <div id="toast" class="toast" hidden></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/motions.js?v=3"></script>
+  <script src="/app.js?v=22"></script>
+</body>
+</html>

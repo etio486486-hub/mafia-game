@@ -1,0 +1,6 @@
+---
+pid: 15172
+cwd: |
+  C:\Users\Lingua
+---
+PS C:\Users\Lingua>

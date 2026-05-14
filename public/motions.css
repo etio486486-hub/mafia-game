@@ -1,0 +1,89 @@
+#motion-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.88);
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+
+#motion-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.motion-panel {
+  width: min(520px, 94vw);
+  border: 1px solid #c9a86a;
+  background: #12141c;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+  animation: motionSlideIn 0.45s ease;
+}
+
+@keyframes motionSlideIn {
+  from { transform: translateY(24px) scale(0.97); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+.motion-header {
+  padding: 10px 14px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #f5c842;
+  background: #0a0c12;
+  border-bottom: 1px solid #2a3040;
+  letter-spacing: 0.02em;
+}
+
+.motion-scene {
+  background: #0d0f18;
+  border-bottom: 1px solid #2a3040;
+  line-height: 0;
+}
+
+.motion-scene img {
+  width: 100%;
+  height: auto;
+  display: block;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
+.motion-message {
+  padding: 14px 16px;
+  background: linear-gradient(180deg, #d4b896 0%, #c4a67e 100%);
+  color: #3a2818;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.5;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.motion-situation {
+  padding: 10px 14px;
+  background: #1e222c;
+  color: #b8c4d4;
+  font-size: 0.75rem;
+  text-align: center;
+  line-height: 1.45;
+  border-top: 1px solid #2a3040;
+}
+
+.motion-close {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 12px auto 14px;
+}
+
+@media (max-width: 480px) {
+  .motion-message { font-size: 0.88rem; padding: 12px; }
+  .motion-header { font-size: 0.72rem; }
+}

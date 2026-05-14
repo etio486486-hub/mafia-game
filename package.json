@@ -1,0 +1,14 @@
+{
+  "name": "mafia-game",
+  "version": "1.0.0",
+  "description": "Web multiplayer Mafia game (Express + Socket.io)",
+  "scripts": {
+    "start": "node server.js",
+    "prepare-motions": "node scripts/copy-motion-pngs.js",
+    "prepare-assets": "node scripts/copy-motion-pngs.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
