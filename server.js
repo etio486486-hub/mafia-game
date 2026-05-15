@@ -265,7 +265,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14j',
+    stability: '2026-05-14l',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -885,6 +885,13 @@ function buildSuspicionScores(room, voter, opts = {}) {
     }
   }
 
+  for (const p of aliveOthers) {
+    if (!p.alive) scores[p.id] = 0;
+  }
+  for (const p of Object.values(room.players)) {
+    if (!p.alive && scores[p.id] != null) scores[p.id] = 0;
+  }
+
   const cleared = voteFacts.getClearedIds(room, voter, voteFactHelpers);
   for (const id of cleared) {
     scores[id] = 0;
@@ -960,6 +967,8 @@ botBrain.configure({
   getClearedPlayerIds: (room, bot) => voteFacts.getClearedIds(room, bot, voteFactHelpers),
   isPlayerClearedByFacts: (room, bot, id) => voteFacts.isPlayerCleared(room, bot, id, voteFactHelpers),
   parsePoliceReportFromText: (room, text) => voteFacts.parsePoliceReportFromText(room, text),
+  getAccuseReasonForTarget: (room, bot, id) => voteFacts.getAccuseReasonForTarget(room, bot, id, voteFactHelpers),
+  formatAccuseLine: (room, bot, id, speaker) => voteFacts.formatAccuseLine(room, bot, id, voteFactHelpers, speaker),
   getBotMind,
   isPoliceReportRequest,
   buildPolicePublicReport,
