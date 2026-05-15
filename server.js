@@ -263,7 +263,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14f',
+    stability: '2026-05-14g',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -1004,6 +1004,22 @@ function pickBotKillTarget(room, mafiaBot) {
 }
 
 function pickBotHealTarget(room, doctorBot) {
+  const killTarget = getMafiaKillTarget(room);
+  if (killTarget && killTarget !== doctorBot.id && Math.random() < 0.58) {
+    return killTarget;
+  }
+
+  const alive = getAlivePlayers(room).filter((p) => p.id !== doctorBot.id);
+  const humans = alive.filter((p) => !p.isBot);
+  const powerRoles = [ROLE.POLICE, ROLE.REPORTER, ROLE.SOLDIER, ROLE.POLITICIAN, ROLE.DOCTOR];
+  const powerHumans = humans.filter((p) => powerRoles.includes(p.role));
+  if (powerHumans.length && Math.random() < 0.52) {
+    return powerHumans[Math.floor(Math.random() * powerHumans.length)].id;
+  }
+  if (humans.length && Math.random() < 0.45) {
+    return humans[Math.floor(Math.random() * humans.length)].id;
+  }
+
   const scores = buildSuspicionScores(room, doctorBot);
   const selfSuspicion = scores[doctorBot.id] || 0;
   if (selfSuspicion >= 5) return doctorBot.id;
@@ -1015,6 +1031,32 @@ function pickBotHealTarget(room, doctorBot) {
     if (s >= 4) return id;
   }
   return pickRandomTarget(room, doctorBot, { excludeSelf: false });
+}
+
+function pickBotReporterTarget(room, reporter) {
+  const alive = getAlivePlayers(room).filter((p) => p.id !== reporter.id);
+  const humans = alive.filter((p) => !p.isBot);
+  const mind = getBotMind(room, reporter.id);
+  const unknownHumans = humans.filter((p) => !mind.knownRoles[p.id]);
+  if (unknownHumans.length && Math.random() < 0.65) {
+    return unknownHumans[Math.floor(Math.random() * unknownHumans.length)].id;
+  }
+  if (humans.length && Math.random() < 0.5) {
+    return humans[Math.floor(Math.random() * humans.length)].id;
+  }
+  return pickRandomTarget(room, reporter);
+}
+
+function pickBotSpyTarget(room, spy) {
+  const alive = getAlivePlayers(room).filter((p) => p.id !== spy.id);
+  const humans = alive.filter((p) => !p.isBot);
+  const mind = getBotMind(room, spy.id);
+  const unknownHumans = humans.filter((p) => !mind.knownRoles[p.id]);
+  if (unknownHumans.length && Math.random() < 0.6) {
+    return unknownHumans[Math.floor(Math.random() * unknownHumans.length)].id;
+  }
+  const scores = buildSuspicionScores(room, spy, { skipBotHumanBias: true });
+  return pickWeightedFromScores(scores, [spy.id]) || pickRandomTarget(room, spy);
 }
 
 function pickBotPoliceInvestigateTarget(room, police) {
@@ -1053,9 +1095,11 @@ function pickBotNightActionTarget(room, bot, role) {
     case ROLE.DOCTOR:
       return pickBotHealTarget(room, bot);
     case ROLE.POLICE:
-    case ROLE.SPY:
-    case ROLE.REPORTER:
       return pickBotInvestigateTarget(room, bot);
+    case ROLE.SPY:
+      return pickBotSpyTarget(room, bot);
+    case ROLE.REPORTER:
+      return pickBotReporterTarget(room, bot);
     case ROLE.MEDIUM: {
       const dead = Object.values(room.players).filter(p => !p.alive);
       if (!dead.length) return null;
@@ -1146,6 +1190,132 @@ function scheduleBotDayChat(room) {
     .forEach((ms) => {
       scheduleRoomTask(room, () => runBotDayChat(room), ms);
     });
+}
+
+const DAWN_SKILL_REACTION_SLOTS_MS = [4000, 9500, 15000];
+
+function collectBotNightActs(room, g) {
+  const na = g.nightActions || {};
+  const acts = {};
+  const botWithRole = (role) => Object.values(room.players).find((p) => p.isBot && p.role === role && p.alive);
+
+  const record = (bot, type, targetId, extra = {}) => {
+    if (!bot || !targetId) return;
+    const target = getPlayerById(room, targetId);
+    if (!target) return;
+    acts[bot.id] = {
+      type,
+      targetName: target.nickname,
+      roleLabel: ROLE_LABELS[target.role],
+      ...extra
+    };
+  };
+
+  const policeBot = botWithRole(ROLE.POLICE);
+  if (policeBot && na.policeTarget) {
+    const t = getPlayerById(room, na.policeTarget);
+    record(policeBot, 'police', na.policeTarget, { isMafia: t ? isMafiaRole(t.role) : null });
+  }
+  const spyBot = botWithRole(ROLE.SPY);
+  if (spyBot && na.spyTarget) {
+    const t = getPlayerById(room, na.spyTarget);
+    record(spyBot, 'spy', na.spyTarget, {
+      joinedMafia: !!(t && isMafiaRole(t.role) && spyBot.joinedMafiaChat)
+    });
+  }
+  const reporterBot = botWithRole(ROLE.REPORTER);
+  if (reporterBot && na.reporterTarget && g.nightIndex >= 2) {
+    record(reporterBot, 'reporter', na.reporterTarget, {});
+  }
+  const doctorBot = botWithRole(ROLE.DOCTOR);
+  if (doctorBot && na.doctorTarget) {
+    record(doctorBot, 'doctor', na.doctorTarget, {});
+  }
+  const mediumBot = botWithRole(ROLE.MEDIUM);
+  if (mediumBot && na.mediumTarget) {
+    const t = getPlayerById(room, na.mediumTarget);
+    if (t && !t.alive) record(mediumBot, 'medium', na.mediumTarget, {});
+  }
+
+  return acts;
+}
+
+function buildLastNightReport(room) {
+  const g = room.game;
+  const s = g._nightSummary || {};
+  const deaths = (s.deaths || []).map((id) => ({ id, name: playerName(room, id) }));
+  const annText = (g.dawnAnnouncements || []).join(' ');
+
+  let reporterReveal = s.reporterReveal ? { ...s.reporterReveal } : null;
+  if (!reporterReveal && room.pendingReporterRevealData) {
+    reporterReveal = { ...room.pendingReporterRevealData };
+  }
+  if (!reporterReveal) {
+    const m = annText.match(/기자 취재:\s*(.+?)의 직업은 \[(.+?)\]/);
+    if (m) reporterReveal = { targetName: m[1], roleLabel: m[2] };
+  }
+
+  const reporter = Object.values(room.players).find((p) => p.role === ROLE.REPORTER);
+  const doctor = Object.values(room.players).find((p) => p.role === ROLE.DOCTOR && p.alive);
+  const soldier = s.soldierBlockTargetId ? getPlayerById(room, s.soldierBlockTargetId) : null;
+
+  return {
+    nightIndex: g.nightIndex,
+    deaths,
+    quietNight: deaths.length === 0 && !s.healBlockedKill && !s.soldierBlockedKill,
+    healSave: !!s.healBlockedKill,
+    soldierBlock: !!s.soldierBlockedKill,
+    reporterReveal,
+    reporterBotId: reporter ? reporter.id : null,
+    doctorBotId: doctor ? doctor.id : null,
+    soldierBotId: soldier ? soldier.id : null,
+    announcementText: annText,
+    botActs: s.botActs || {}
+  };
+}
+
+function scoreBotDawnReaction(bot, report) {
+  if (!report) return 0;
+  let s = Math.random();
+  if (report.reporterReveal) {
+    if (bot.role === ROLE.REPORTER) s += 8;
+    if (bot.role === ROLE.POLICE) s += 4;
+    if (isMafiaTeam(bot.role)) s += 3;
+  }
+  if (report.healSave && bot.role === ROLE.DOCTOR) s += 7;
+  if (report.soldierBlock && bot.role === ROLE.SOLDIER) s += 7;
+  if (report.deaths && report.deaths.length) {
+    if (bot.role === ROLE.MEDIUM) s += 5;
+    if (isMafiaTeam(bot.role)) s += 2;
+  }
+  if (report.quietNight) s += 1;
+  if (report.botActs && report.botActs[bot.id]) s += 6;
+  return s;
+}
+
+function runBotDawnSkillReaction(room) {
+  if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
+  if (!canBotChatNow(room) || room.botChatInFlight) return;
+  const report = room.game.lastNightReport;
+  if (!report) return;
+
+  const bots = getBots(room).filter((p) => p.alive);
+  bots.sort((a, b) => scoreBotDawnReaction(b, report) - scoreBotDawnReaction(a, report));
+
+  for (const bot of bots) {
+    const text = botBrain.generateBotDawnReaction(room, bot, report);
+    if (text) {
+      postBotDayMessage(room, bot, text);
+      return;
+    }
+  }
+}
+
+function scheduleBotDawnSkillReactions(room) {
+  if (!hasBots(room) || !room.game?.lastNightReport) return;
+  DAWN_SKILL_REACTION_SLOTS_MS.forEach((ms) => {
+    scheduleRoomTask(room, () => runBotDawnSkillReaction(room), ms);
+  });
 }
 
 function runBotNightActions(room) {
@@ -1889,15 +2059,19 @@ function startDawn(room) {
 }
 
 function startDayChat(room) {
-  room.game.dayIndex += 1;
-  room.game.dayVotes = {};
-  room.game.executionVotes = {};
-  room.game.executionCandidateId = null;
-  room.game.dawnAnnouncements = [];
+  const g = room.game;
+  g.dayIndex += 1;
+  g.dayVotes = {};
+  g.executionVotes = {};
+  g.executionCandidateId = null;
+  g.lastNightReport = buildLastNightReport(room);
+  g.dawnAnnouncements = [];
+  g._nightSummary = null;
   resetBotChatStats(room);
   clearBotChatTimers(room);
   const debateMs = computeDayChatDurationMs(room);
   setPhase(room, PHASE.DAY_CHAT, debateMs);
+  scheduleBotDawnSkillReactions(room);
   scheduleBotDayChat(room);
 }
 
@@ -2184,6 +2358,17 @@ function resolveNight(room) {
       situation: '[상황] 밤에 아무 일도 일어나지 않았을 경우'
     });
   }
+
+  g._nightSummary = {
+    deaths: [...deaths],
+    healBlockedKill,
+    soldierBlockedKill,
+    soldierBlockTargetId: soldierBlockedKill ? killTarget : null,
+    reporterReveal: room.pendingReporterRevealData
+      ? { ...room.pendingReporterRevealData }
+      : null,
+    botActs: collectBotNightActs(room, g)
+  };
 
   g.pendingAnnouncements = [];
 
