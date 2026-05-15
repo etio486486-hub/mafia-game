@@ -10,18 +10,13 @@ const botBrain = require('./lib/bot-brain');
 const app = express();
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
-  pingInterval: 20000,
-  pingTimeout: 90000,
+  pingInterval: 25000,
+  pingTimeout: 120000,
   connectTimeout: 45000,
   cors: { origin: '*' },
-  transports: ['polling', 'websocket'],
-  allowEIO3: true,
+  transports: ['websocket', 'polling'],
   perMessageDeflate: false,
-  maxHttpBufferSize: 1e6,
-  connectionStateRecovery: {
-    maxDisconnectionDuration: 3 * 60 * 1000,
-    skipMiddlewares: true
-  }
+  maxHttpBufferSize: 512000
 });
 
 httpServer.keepAliveTimeout = 120000;
@@ -184,11 +179,14 @@ const MIN_PHASE_REMAINING_MS = 5000;
 
 /** Bot day-chat rate limits (prevents socket flood / disconnects) */
 const BOT_CHAT = {
-  MIN_GAP_MS: 10000,
-  MAX_PER_DAY_PHASE: 8,
-  HUMAN_REPLY_WAIT_MS: 6000,
-  SCHEDULED_SLOTS_MS: [12000, 55000, 95000]
+  MIN_GAP_MS: 14000,
+  MAX_PER_DAY_PHASE: 5,
+  HUMAN_REPLY_WAIT_MS: 9000,
+  SCHEDULED_SLOTS_MS: [18000, 75000]
 };
+
+const ROOM_EMIT_BUDGET = { maxPerSecond: 18, maxChatPerSecond: 6 };
+const STATE_SYNC_CHAT_LIMIT = 80;
 
 const PHASE = {
   LOBBY: 'lobby',
@@ -247,10 +245,12 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
+    stability: '2026-05-14b',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
-    uptime: Math.floor(process.uptime())
+    uptime: Math.floor(process.uptime()),
+    memoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024)
   });
 });
 
@@ -386,6 +386,21 @@ function recordBotChat(room) {
   room.game.botChatStats = st;
 }
 
+function canEmitRoomEvent(room, kind = 'general') {
+  const now = Date.now();
+  if (!room._emitBucket || now > room._emitBucket.resetAt) {
+    room._emitBucket = { count: 0, chatCount: 0, resetAt: now + 1000 };
+  }
+  const b = room._emitBucket;
+  if (kind === 'chat') {
+    if (b.chatCount >= ROOM_EMIT_BUDGET.maxChatPerSecond) return false;
+    b.chatCount++;
+  }
+  if (b.count >= ROOM_EMIT_BUDGET.maxPerSecond) return false;
+  b.count++;
+  return true;
+}
+
 function bumpRoomTaskGeneration(room) {
   if (!room) return;
   if (room._broadcastStateTimer) {
@@ -508,6 +523,11 @@ function findPlayersMentionedInText(room, text) {
 }
 
 function buildSuspicionScores(room, voter) {
+  const now = Date.now();
+  if (room._susCache && room._susCache.voterId === voter.id && now - room._susCache.at < 2500) {
+    return room._susCache.scores;
+  }
+
   const scores = {};
   const g = room.game;
   const aliveOthers = getAlivePlayers(room).filter(p => p.id !== voter.id);
@@ -643,6 +663,7 @@ function buildSuspicionScores(room, voter) {
     }
   }
 
+  room._susCache = { voterId: voter.id, at: Date.now(), scores };
   return scores;
 }
 
@@ -816,13 +837,15 @@ function runBotDayVotes(room) {
 
 function scheduleBotDayVotes(room) {
   if (!hasBots(room)) return;
-  [1000, 3500, 7000, 11000].forEach((ms) => {
-    scheduleRoomTask(room, () => runBotDayVotes(room), ms);
-  });
+  scheduleRoomTask(room, () => runBotDayVotes(room), 5000);
 }
 
 function postBotDayMessage(room, bot, text) {
   if (!text || room.phase !== PHASE.DAY_CHAT) return;
+  if (!canEmitRoomEvent(room, 'chat')) {
+    console.warn(`[BOT] chat rate-limited room=${room.code}`);
+    return;
+  }
   const msg = { from: bot.nickname, fromId: bot.id, text, time: Date.now() };
   pushChat(room, 'day', msg);
   broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
@@ -899,14 +922,11 @@ function runBotNightActions(room) {
     }
   }
   console.log(`[BOT] smart night actions (${bots.length} bots)`);
-  broadcastState(room);
 }
 
 function scheduleBotNightActions(room) {
   if (!hasBots(room)) return;
-  [2000, 8000, 18000, 24000].forEach((ms) => {
-    scheduleRoomTask(room, () => runBotNightActions(room), ms);
-  });
+  scheduleRoomTask(room, () => runBotNightActions(room), 5000);
 }
 
 function createBotPlayer(room) {
@@ -1091,7 +1111,8 @@ function checkWin(room) {
 
 // ─── client state ─────────────────────────────────────────────────────────────
 
-function toClientState(room, viewerUserId) {
+function toClientState(room, viewerUserId, opts = {}) {
+  const includeChat = !!opts.includeChat;
   const viewer = getPlayerByUserId(room, viewerUserId);
   const viewerId = viewer ? viewer.id : null;
 
@@ -1156,37 +1177,43 @@ function toClientState(room, viewerUserId) {
           alive: p.alive
         }))
       : null,
-    lobbyChat: room.phase === PHASE.LOBBY ? room.chatLog.lobby : null,
-    dayChat: room.phase !== PHASE.LOBBY && room.game ? getMergedDayChatLog(room) : null,
-    deadChat: viewer && room.game && (!viewer.alive || viewer.role === ROLE.MEDIUM)
+    lobbyChat: includeChat && room.phase === PHASE.LOBBY ? room.chatLog.lobby.slice(-STATE_SYNC_CHAT_LIMIT) : undefined,
+    dayChat: includeChat && room.phase !== PHASE.LOBBY && room.game
+      ? getMergedDayChatLog(room).slice(-STATE_SYNC_CHAT_LIMIT)
+      : undefined,
+    deadChat: includeChat && viewer && room.game && (!viewer.alive || viewer.role === ROLE.MEDIUM)
       && room.phase !== PHASE.DAY_CHAT
-      ? room.chatLog.dead
-      : null,
-    mafiaChat: viewer && room.game && viewer.alive && (viewer.role === ROLE.MAFIA || viewer.joinedMafiaChat)
-      ? room.chatLog.mafia
-      : null,
-    lastWordsChat: room.game ? room.chatLog.lastWords : null
+      ? room.chatLog.dead.slice(-STATE_SYNC_CHAT_LIMIT)
+      : undefined,
+    mafiaChat: includeChat && viewer && room.game && viewer.alive
+      && (viewer.role === ROLE.MAFIA || viewer.joinedMafiaChat)
+      ? room.chatLog.mafia.slice(-STATE_SYNC_CHAT_LIMIT)
+      : undefined,
+    lastWordsChat: includeChat && room.game
+      ? room.chatLog.lastWords.slice(-STATE_SYNC_CHAT_LIMIT)
+      : undefined
   };
 }
 
 function broadcastStateNow(room) {
   if (!room) return;
+  if (!canEmitRoomEvent(room, 'general')) return;
   ensurePhaseTimer(room);
   for (const p of Object.values(room.players)) {
-    if (!p.connected) continue;
+    if (!p.connected || p.isBot) continue;
     const sess = sessions.get(p.userID);
     if (!sess || !sess.socketId) continue;
-    io.to(sess.socketId).emit('stateSync', toClientState(room, p.userID));
+    io.to(sess.socketId).emit('stateSync', toClientState(room, p.userID, { includeChat: false }));
   }
 }
 
 function broadcastState(room) {
   if (!room) return;
-  if (room._broadcastStateTimer) return;
+  if (room._broadcastStateTimer) clearTimeout(room._broadcastStateTimer);
   room._broadcastStateTimer = setTimeout(() => {
     room._broadcastStateTimer = null;
     broadcastStateNow(room);
-  }, 100);
+  }, 200);
 }
 
 function broadcastToRoom(room, event, data, filterFn) {
@@ -1438,7 +1465,9 @@ function runBotActions(room) {
     }
   }
 
-  broadcastState(room);
+  if (room.phase !== PHASE.NIGHT) {
+    broadcastState(room);
+  }
 }
 
 function scheduleBotActions(room, durationMs) {
@@ -1449,9 +1478,9 @@ function scheduleBotActions(room, durationMs) {
     if (!isActiveGame(room)) return;
     runBotActions(room);
   };
-  setTimeout(runIfCurrent, 800);
-  if (durationMs > 5000) {
-    setTimeout(runIfCurrent, Math.floor(durationMs * 0.6));
+  scheduleRoomTask(room, runIfCurrent, 1200);
+  if (durationMs > 12000) {
+    scheduleRoomTask(room, runIfCurrent, Math.floor(durationMs * 0.55));
   }
 }
 
@@ -2221,7 +2250,6 @@ function handleDisconnect(socket) {
 
     if (room.phase !== PHASE.LOBBY && room.phase !== PHASE.GAME_OVER) {
       console.log(`[SESSION] userID=${userID} offline during game, slot kept`);
-      broadcastState(room);
       return;
     }
 
@@ -2238,7 +2266,6 @@ function handleDisconnect(socket) {
     console.log(`[SESSION] userID=${userID} removed after grace period`);
   }, GRACE_PERIOD_MS);
 
-  broadcastState(room);
   console.log(`[SESSION] userID=${userID} disconnected, grace period started`);
 }
 
@@ -2259,9 +2286,8 @@ function reconnectPlayer(socket, room, player) {
   if (player.role) {
     socket.emit('privateInfo', { type: 'role', role: player.role, roleLabel: ROLE_LABELS[player.role] });
   }
-  socket.emit('stateSync', toClientState(room, socket.userID));
+  socket.emit('stateSync', toClientState(room, socket.userID, { includeChat: true }));
   socket.emit('joinResult', { ok: true, resumed: true });
-  broadcastState(room);
   console.log(`[SESSION] userID=${socket.userID} reconnected to room ${room.code}`);
 }
 
@@ -2537,7 +2563,7 @@ io.on('connection', (socket) => {
     sess.playerId = playerId;
     socket.join(room.code);
     pushLobbySystemMessage(room, `${nickname}님이 입장했습니다.`);
-    socket.emit('stateSync', toClientState(room, userID));
+    socket.emit('stateSync', toClientState(room, userID, { includeChat: true }));
     socket.emit('joinResult', { ok: true });
     broadcastState(room);
   });
@@ -2557,7 +2583,7 @@ io.on('connection', (socket) => {
     sess.playerId = host.id;
     socket.join(room.code);
     pushLobbySystemMessage(room, `${nickname}님이 방을 만들었습니다.`);
-    socket.emit('stateSync', toClientState(room, userID));
+    socket.emit('stateSync', toClientState(room, userID, { includeChat: true }));
     console.log(`[ROOM] created ${room.code} by ${nickname}`);
   });
 
@@ -2720,6 +2746,11 @@ io.on('connection', (socket) => {
 
 process.on('uncaughtException', (err) => {
   console.error('[FATAL] uncaughtException', err);
+  // Keep process alive on Render — dropping one bad tick is better than full restart
+});
+
+process.on('warning', (w) => {
+  if (w.name === 'MaxListenersExceededWarning') console.warn('[WARN]', w.message);
 });
 
 process.on('unhandledRejection', (reason) => {
@@ -2753,4 +2784,5 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`  Motion art: ${motionReady}/${MOTION_ASSET_NAMES.length} (copied ${assets.motionsCopied})`);
   const botAi = botBrain.getStatus();
   console.log(`  Bot AI: ${botAi.mode}${botAi.llmEnabled ? ` (${botAi.model})` : ''}`);
+  console.log('  Stability patch: 2026-05-14b (light stateSync, rate limits)');
 });

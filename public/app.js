@@ -1511,7 +1511,20 @@ socket.on('stateSync', (data) => {
   rejoinAttempts = 0;
   $('#reconnect-banner').hidden = true;
 
+  const savedChat = {
+    day: chatStore.day,
+    mafia: chatStore.mafia,
+    dead: chatStore.dead,
+    lastWords: chatStore.lastWords,
+    lobby: chatStore.lobby
+  };
   state = data;
+  if (!Array.isArray(data.dayChat) && savedChat.day.length) chatStore.day = savedChat.day;
+  if (!Array.isArray(data.mafiaChat) && savedChat.mafia.length) chatStore.mafia = savedChat.mafia;
+  if (!Array.isArray(data.deadChat) && savedChat.dead.length) chatStore.dead = savedChat.dead;
+  if (!Array.isArray(data.lastWordsChat) && savedChat.lastWords.length) chatStore.lastWords = savedChat.lastWords;
+  if (!Array.isArray(data.lobbyChat) && savedChat.lobby.length) chatStore.lobby = savedChat.lobby;
+
   if (data.roomCode) localStorage.setItem('mafia_roomCode', data.roomCode);
   else localStorage.removeItem('mafia_roomCode');
   if (data.phase === 'none') {
