@@ -266,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14m',
+    stability: '2026-05-14n',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -712,8 +712,15 @@ function buildPolicePublicReport(room) {
     seen.add(row.targetId);
     const t = getPlayerById(room, row.targetId);
     const name = (t && t.nickname) || row.targetName;
+    if (!name || String(name).trim() === '?' || String(name).trim() === '') continue;
     if (row.isMafia) parts.push(`${name}님은 마피아입니다`);
     else parts.push(`${name}님은 마피아가 아닙니다`);
+  }
+  if (!parts.length) {
+    return {
+      police,
+      text: '저는 아직 조사한 사람이 없습니다. 밤에 수사할 대상을 지목해 주세요.'
+    };
   }
 
   return {
@@ -1052,7 +1059,20 @@ function pickBotPoliceInvestigateTarget(room, police) {
   const alive = getAlivePlayers(room).filter((p) => p.id !== police.id);
   if (!alive.length) return null;
 
-  const humans = alive.filter((p) => !p.isBot);
+  const intel = (room.game?.policeIntel?.[police.id]) || [];
+  const investigated = new Set(intel.map((r) => r.targetId));
+  let pool = alive.filter((p) => !investigated.has(p.id));
+
+  if (!pool.length && intel.length) {
+    const byAge = [...intel].sort((a, b) => (a.at || 0) - (b.at || 0));
+    for (const row of byAge) {
+      const p = getPlayerById(room, row.targetId);
+      if (p && p.alive && p.id !== police.id) return p.id;
+    }
+    pool = alive;
+  }
+
+  const humans = pool.filter((p) => !p.isBot);
   const mind = getBotMind(room, police.id);
   const unknownHumans = humans.filter((p) => !mind.knownRoles[p.id]);
 
@@ -1064,9 +1084,9 @@ function pickBotPoliceInvestigateTarget(room, police) {
   }
 
   const scores = buildSuspicionScores(room, police, { skipBotHumanBias: true });
-  const pick = pickWeightedFromScores(scores, [police.id]);
-  if (pick) return pick;
-  return pickRandomTarget(room, police);
+  const pick = pickWeightedFromScores(scores, [police.id, ...pool.map((p) => p.id)]);
+  if (pick && pool.some((p) => p.id === pick)) return pick;
+  return pool[Math.floor(Math.random() * pool.length)].id;
 }
 
 function pickBotInvestigateTarget(room, investigator) {
@@ -1127,7 +1147,7 @@ function scheduleBotDayVotes(room) {
 }
 
 function postBotDayMessage(room, bot, text) {
-  if (!text || room.phase !== PHASE.DAY_CHAT) return;
+  if (!text || !bot?.alive || room.phase !== PHASE.DAY_CHAT) return;
   if (!canEmitRoomEvent(room, 'chat')) {
     console.warn(`[BOT] chat rate-limited room=${room.code}`);
     return;
