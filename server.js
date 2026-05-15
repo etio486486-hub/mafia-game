@@ -265,7 +265,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14h',
+    stability: '2026-05-14i',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -744,7 +744,7 @@ function schedulePolicePublicReport(room) {
     room._policeReportTimer = null;
     if (room.phase !== PHASE.DAY_CHAT) return;
     postPolicePublicReport(room);
-  }, 2800);
+  }, 350);
 }
 
 function buildSuspicionScores(room, voter, opts = {}) {
@@ -885,6 +885,11 @@ function buildSuspicionScores(room, voter, opts = {}) {
     }
   }
 
+  const cleared = voteFacts.getClearedIds(room, voter, voteFactHelpers);
+  for (const id of cleared) {
+    scores[id] = 0;
+  }
+
   if (!skipBotHumanBias) {
     room._susCache = { voterId: voter.id, at: Date.now(), scores };
   }
@@ -935,52 +940,9 @@ const voteFactHelpers = {
   getBotMind
 };
 
-/** Day-chat target: spread suspicion across bots, not only the human */
+/** Day-chat accuse target: skill 팩트로 확인된 대상만 (추측 지목 금지) */
 function pickBotChatAccuseTarget(room, bot) {
-  const scores = buildSuspicionScores(room, bot);
-  const excludeMafia = isMafiaTeam(bot.role);
-  const sorted = Object.entries(scores)
-    .filter(([id]) => id !== bot.id)
-    .sort((a, b) => b[1] - a[1]);
-
-  const pickId = (id) => {
-    const p = getPlayerById(room, id);
-    if (!p || !p.alive) return false;
-    if (excludeMafia && isMafiaTeam(p.role)) return false;
-    return true;
-  };
-
-  const otherBots = sorted.filter(([id]) => {
-    const p = getPlayerById(room, id);
-    return p && p.isBot && pickId(id);
-  });
-  const others = sorted.filter(([id]) => pickId(id));
-
-  if (otherBots.length && Math.random() < 0.68) {
-    const roll = Math.random();
-    if (roll < 0.5 || otherBots.length === 1) return otherBots[0][0];
-    return otherBots[Math.min(1, otherBots.length - 1)][0];
-  }
-
-  if (others.length >= 2) {
-    const top = others[0];
-    const second = others[1];
-    const topP = getPlayerById(room, top[0]);
-    if (topP && !topP.isBot && second[1] >= top[1] * 0.45 && Math.random() < 0.75) {
-      const secondP = getPlayerById(room, second[0]);
-      if (secondP && secondP.isBot) return second[0];
-    }
-  }
-
-  for (const [id] of others) {
-    if (pickId(id)) return id;
-  }
-
-  const alive = getAlivePlayers(room).filter((p) => p.id !== bot.id);
-  const botAlive = alive.filter((p) => p.isBot && (!excludeMafia || !isMafiaTeam(p.role)));
-  if (botAlive.length) return botAlive[Math.floor(Math.random() * botAlive.length)].id;
-  if (alive.length) return alive[Math.floor(Math.random() * alive.length)].id;
-  return null;
+  return voteFacts.pickFactChatAccuseTarget(room, bot, voteFactHelpers);
 }
 
 botBrain.configure({
@@ -993,7 +955,11 @@ botBrain.configure({
   buildSuspicionScores,
   pickBotChatAccuseTarget,
   pickBotDayVoteTarget,
+  pickFactChatAccuseTarget: (room, bot) => voteFacts.pickFactChatAccuseTarget(room, bot, voteFactHelpers),
   pickFactBasedExecutionVote: pickBotExecutionVoteFromFacts,
+  getClearedPlayerIds: (room, bot) => voteFacts.getClearedIds(room, bot, voteFactHelpers),
+  isPlayerClearedByFacts: (room, bot, id) => voteFacts.isPlayerCleared(room, bot, id, voteFactHelpers),
+  parsePoliceReportFromText: (room, text) => voteFacts.parsePoliceReportFromText(room, text),
   getBotMind,
   isPoliceReportRequest,
   buildPolicePublicReport,
@@ -2085,17 +2051,18 @@ function startDayChat(room) {
   clearBotChatTimers(room);
   const debateMs = computeDayChatDurationMs(room);
   setPhase(room, PHASE.DAY_CHAT, debateMs);
+  postBotPoliceReportAtDayStart(room);
   scheduleBotDawnSkillReactions(room);
   scheduleBotDayChat(room);
-  ensureBotPoliceIntelPublished(room);
 }
 
-function ensureBotPoliceIntelPublished(room) {
+/** 경찰 봇: 낮 토론 시작 직후 조결 공개 (다른 봇이 팩트 기준으로 반응) */
+function postBotPoliceReportAtDayStart(room) {
   const police = Object.values(room.players).find(
     (p) => p.role === ROLE.POLICE && p.alive && p.isBot
   );
   if (!police || !room.game?.policeIntel?.[police.id]?.length) return;
-  schedulePolicePublicReport(room);
+  postPolicePublicReport(room);
 }
 
 function startDayVote(room) {
