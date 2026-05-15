@@ -688,22 +688,41 @@ function postBotDayMessage(room, bot, text) {
   console.log(`[BOT] ${bot.nickname} day-chat: ${text.slice(0, 40)}`);
 }
 
-async function runBotDayChat(room, { force = false } = {}) {
+async function runBotDayChat(room, { force = false, replyToHuman = false } = {}) {
   if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
   const bots = getBots(room).filter(p => p.alive);
   if (!bots.length) return;
-  if (!force && Math.random() > 0.12) return;
 
-  const speakers = shuffle(bots).slice(0, bots.length >= 3 && Math.random() < 0.4 ? 2 : 1);
-  for (const bot of speakers) {
+  const now = Date.now();
+  const minGap = replyToHuman ? 1200 : 4000;
+  if (!force && room.lastBotDayChatAt && now - room.lastBotDayChatAt < minGap) return;
+  room.lastBotDayChatAt = now;
+
+  const speakerCount = replyToHuman
+    ? Math.min(3, bots.length)
+    : (bots.length >= 3 && Math.random() < 0.45 ? 2 : 1);
+  const speakers = shuffle(bots).slice(0, speakerCount);
+
+  for (let i = 0; i < speakers.length; i++) {
+    const bot = speakers[i];
     if (room.phase !== PHASE.DAY_CHAT) break;
     try {
       const text = await botBrain.generateBotChat(room, bot);
       postBotDayMessage(room, bot, text);
+      if (speakers.length > 1 && i < speakers.length - 1) {
+        await new Promise((r) => setTimeout(r, 600 + Math.floor(Math.random() * 500)));
+      }
     } catch (err) {
       console.warn('[BOT] day-chat error', err.message);
     }
   }
+}
+
+function scheduleBotReplyToHuman(room) {
+  if (!hasBots(room) || room.phase !== PHASE.DAY_CHAT) return;
+  [1200, 2800, 4500].forEach((ms) => {
+    scheduleRoomTask(room, () => runBotDayChat(room, { force: true, replyToHuman: true }), ms);
+  });
 }
 
 function scheduleBotDayChat(room) {
@@ -1005,8 +1024,9 @@ function toClientState(room, viewerUserId) {
         }))
       : null,
     lobbyChat: room.phase === PHASE.LOBBY ? room.chatLog.lobby : null,
-    dayChat: room.phase !== PHASE.LOBBY && room.game ? room.chatLog.day : null,
+    dayChat: room.phase !== PHASE.LOBBY && room.game ? getMergedDayChatLog(room) : null,
     deadChat: viewer && room.game && (!viewer.alive || viewer.role === ROLE.MEDIUM)
+      && room.phase !== PHASE.DAY_CHAT
       ? room.chatLog.dead
       : null,
     mafiaChat: viewer && room.game && viewer.alive && (viewer.role === ROLE.MAFIA || viewer.joinedMafiaChat)
@@ -1227,6 +1247,10 @@ function flushDawnMotions(room) {
 
 function runBotActions(room) {
   if (!isActiveGame(room) || room.phase === PHASE.DAWN) return;
+
+  if (room.phase === PHASE.DAY_CHAT && hasBots(room)) {
+    runBotDayChat(room, { force: true });
+  }
 
   const bots = getBots(room).filter(p => p.alive);
   if (!bots.length) return;
@@ -2186,6 +2210,20 @@ function pushChat(room, channel, entry) {
   if (room.chatLog[channel].length > 200) room.chatLog[channel].shift();
 }
 
+function getMergedDayChatLog(room) {
+  const day = room.chatLog.day || [];
+  const dead = room.chatLog.dead || [];
+  const keys = new Set(day.map(m => `${m.time}|${m.fromId}|${m.text}`));
+  const merged = [...day];
+  for (const m of dead) {
+    const key = `${m.time}|${m.fromId}|${m.text}`;
+    if (keys.has(key)) continue;
+    keys.add(key);
+    merged.push({ ...m, isDead: true });
+  }
+  return merged.sort((a, b) => (a.time || 0) - (b.time || 0));
+}
+
 function pushLobbySystemMessage(room, text) {
   const entry = { from: '시스템', fromId: null, text, system: true, time: Date.now() };
   pushChat(room, 'lobby', entry);
@@ -2214,6 +2252,7 @@ function handleChat(room, socket, channel, text) {
     }
     pushChat(room, 'day', msg);
     broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
+    if (hasBots(room)) scheduleBotReplyToHuman(room);
   } else if (channel === 'mafia') {
     if (room.phase !== PHASE.NIGHT || !player.alive) return reject(socket, '마피아 채팅 불가');
     if (player.role !== ROLE.MAFIA && !player.joinedMafiaChat) return reject(socket, '권한 없음');
@@ -2221,8 +2260,14 @@ function handleChat(room, socket, channel, text) {
     broadcastToRoom(room, 'chatMessage', { channel: 'mafia', ...msg }, p => p.alive && (p.role === ROLE.MAFIA || p.joinedMafiaChat));
   } else if (channel === 'dead') {
     if (player.alive) return reject(socket, '사망자만 대화할 수 있습니다.');
-    pushChat(room, 'dead', msg);
-    broadcastToRoom(room, 'chatMessage', { channel: 'dead', ...msg }, p => !p.alive);
+    const deadMsg = { ...msg, isDead: true };
+    pushChat(room, 'dead', deadMsg);
+    if (room.phase === PHASE.DAY_CHAT) {
+      pushChat(room, 'day', deadMsg);
+      broadcastToRoom(room, 'chatMessage', { channel: 'day', ...deadMsg });
+    } else {
+      broadcastToRoom(room, 'chatMessage', { channel: 'dead', ...deadMsg }, p => !p.alive || p.role === ROLE.MEDIUM);
+    }
   } else if (channel === 'lastWords') {
     if (room.phase !== PHASE.LAST_WORDS) return reject(socket, '최후의 반론 시간이 아닙니다.');
     if (player.id !== room.game.executionCandidateId) return reject(socket, '최다 득표자만 발언할 수 있습니다.');

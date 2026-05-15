@@ -1232,7 +1232,7 @@ function updateChatTabs() {
   const tabLast = $('#tab-lastwords');
 
   tabMafia.hidden = !state.canMafiaChat;
-  tabDead.hidden = !state.canDeadChatView;
+  tabDead.hidden = !state.canDeadChatView || state.phase === 'day_chat';
   tabLast.hidden = state.phase !== 'last_words';
 
   if (state.phase === 'night') {
@@ -1257,9 +1257,8 @@ function updateChatTabs() {
 
   const readOnlyDead = activeChatChannel === 'dead' && state.canDeadChatView && !state.canDeadChatSend;
   const me = state.players.find(p => p.id === state.myPlayerId);
-  const deadViewDay = activeChatChannel === 'day' && me && !me.alive;
   const canType = (
-    (activeChatChannel === 'day' && state.phase === 'day_chat' && me && me.alive) ||
+    (activeChatChannel === 'day' && state.phase === 'day_chat' && me && (me.alive || state.canDeadChatSend)) ||
     (activeChatChannel === 'mafia' && state.phase === 'night' && state.canMafiaChat) ||
     (activeChatChannel === 'dead' && state.canDeadChatView && state.canDeadChatSend) ||
     (activeChatChannel === 'lastWords' && state.phase === 'last_words' && state.myPlayerId === state.executionCandidateId)
@@ -1267,9 +1266,7 @@ function updateChatTabs() {
   const inputEnabled = canType && !readOnlyDead;
   $('#chat-input').disabled = !inputEnabled;
   $('#btn-send-chat').disabled = !inputEnabled;
-  $('#chat-input').placeholder = deadViewDay
-    ? '사망자는 낮 채팅을 볼 수만 있습니다.'
-    : (state.phase === 'dawn' && activeChatChannel === 'day')
+  $('#chat-input').placeholder = (state.phase === 'dawn' && activeChatChannel === 'day')
       ? '아침에는 대화할 수 없습니다. 잠시만 기다리세요.'
       : readOnlyDead
       ? '사망자만 메시지를 보낼 수 있습니다.'
@@ -1290,17 +1287,34 @@ function renderTimeButtons() {
   extend.disabled = !state.canTimeExtend;
 }
 
+function isDeadChatMessage(m) {
+  if (!m || m.system) return false;
+  if (m.isDead) return true;
+  if (!state || !m.fromId) return false;
+  const p = state.players.find(pl => pl.id === m.fromId);
+  return p && !p.alive;
+}
+
+function getChatMessagesForView() {
+  if (activeChatChannel === 'day') {
+    return (chatStore.day || []).slice().sort((a, b) => (a.time || 0) - (b.time || 0));
+  }
+  return chatStore[activeChatChannel] || [];
+}
+
 function renderChat() {
-  const msgs = chatStore[activeChatChannel] || [];
+  const msgs = getChatMessagesForView();
   const myId = state ? state.myPlayerId : null;
   $('#chat-messages').innerHTML = msgs.map(m => {
     if (m.system) {
       return `<li class="chat-msg system"><span class="chat-bubble system">${escapeHtml(m.text)}</span></li>`;
     }
     const isMine = m.fromId === myId;
-    const cls = isMine ? 'mine' : 'theirs';
+    const dead = isDeadChatMessage(m);
+    const cls = `${isMine ? 'mine' : 'theirs'}${dead ? ' dead' : ''}`;
     const profileHtml = m.fromId ? buildChatProfileHtml(m.fromId) : '';
-    const nameLabel = isMine ? '나' : escapeHtml(m.from || '');
+    let nameLabel = isMine ? '나' : escapeHtml(m.from || '');
+    if (dead && !isMine) nameLabel += ' <span class="dead-tag">사망</span>';
     return `<li class="chat-msg ${cls}">` +
       `<div class="chat-row">` +
       profileHtml +
@@ -1562,6 +1576,12 @@ socket.on('dayVoteResults', (data) => {
 
 socket.on('chatMessage', (data) => {
   const ch = data.channel === 'lastWords' ? 'lastWords' : data.channel;
+  if (ch === 'day') {
+    if (!chatStore.day) chatStore.day = [];
+    chatStore.day.push(data);
+    if (activeChatChannel === 'day') renderChat();
+    return;
+  }
   if (!chatStore[ch]) chatStore[ch] = [];
   chatStore[ch].push(data);
   if (ch === 'lobby') renderLobbyChat();
@@ -1669,8 +1689,12 @@ function sendLobbyChat() {
 function sendChat() {
   const text = ($('#chat-input').value || '').trim();
   if (!text) return;
-  const map = { day: 'chat', mafia: 'mafiaChat', dead: 'deadChat', lastWords: 'lastWordsChat' };
-  socket.emit(map[activeChatChannel], { text });
+  const me = state && state.players.find(p => p.id === state.myPlayerId);
+  let eventName = 'chat';
+  if (activeChatChannel === 'mafia') eventName = 'mafiaChat';
+  else if (activeChatChannel === 'lastWords') eventName = 'lastWordsChat';
+  else if (activeChatChannel === 'dead' || (activeChatChannel === 'day' && me && !me.alive)) eventName = 'deadChat';
+  socket.emit(eventName, { text });
   $('#chat-input').value = '';
 }
 
