@@ -279,6 +279,8 @@ const socket = io({
 let socketConnected = false;
 let reconnectPaused = false;
 let pendingRoomRejoin = null;
+let rejoinAttempts = 0;
+const MAX_REJOIN_ATTEMPTS = 1;
 let keepAliveTimer = null;
 let disconnectBannerTimer = null;
 
@@ -296,8 +298,30 @@ function stopKeepAlive() {
   }
 }
 
+function handleRoomLost(wasInGame = false) {
+  pendingRoomRejoin = null;
+  rejoinAttempts = 0;
+  localStorage.removeItem('mafia_roomCode');
+  stopKeepAlive();
+  $('#reconnect-banner').hidden = true;
+
+  const msg = wasInGame
+    ? '서버가 재시작되어 이전 방을 이어갈 수 없습니다. 새 방을 만들어 주세요.'
+    : '저장된 방을 찾을 수 없습니다. 방 코드를 다시 입력하거나 새로 만들어 주세요.';
+  if (!sessionStorage.getItem('mafia_room_lost_shown')) {
+    sessionStorage.setItem('mafia_room_lost_shown', '1');
+    showToast(msg);
+    setTimeout(() => sessionStorage.removeItem('mafia_room_lost_shown'), 30000);
+  }
+
+  state = { phase: 'none', serverInfo: state && state.serverInfo ? state.serverInfo : null };
+  resetLobbyClientState();
+  renderFromState();
+}
+
 function requestSessionSync() {
   if (reconnectPaused || !socketConnected) return;
+  rejoinAttempts = 0;
   const nick = getNickname() || localStorage.getItem('mafia_nickname') || '플레이어';
   const savedRoom = localStorage.getItem('mafia_roomCode');
   if (savedRoom) {
@@ -1444,20 +1468,34 @@ socket.on('sessionTaken', (data) => {
 });
 
 socket.on('joinResult', (data) => {
-  if (data && data.ok === false && data.reason === 'game_in_progress') {
-    showToast('방에 다시 연결할 수 없습니다. 새로고침 후 다시 시도하세요.');
+  if (!data || data.ok !== false) return;
+  if (data.reason === 'room_expired' || data.reason === 'room_not_found') {
+    const wasInGame = !!(state && state.phase && !['none', 'lobby'].includes(state.phase));
+    handleRoomLost(wasInGame);
+    return;
+  }
+  if (data.reason === 'game_in_progress' && !data.silent) {
+    showToast('게임 중입니다. 이 탭에서 F5로 새로고침하면 같은 계정으로 다시 붙을 수 있어요.');
   }
 });
 
 socket.on('stateSync', (data) => {
-  if (data.phase === 'none' && pendingRoomRejoin) {
+  if (data.roomExpired) {
+    const wasInGame = !!(state && state.phase && !['none', 'lobby'].includes(state.phase));
+    handleRoomLost(wasInGame);
+    return;
+  }
+
+  if (data.phase === 'none' && pendingRoomRejoin && rejoinAttempts < MAX_REJOIN_ATTEMPTS) {
+    rejoinAttempts += 1;
     const code = pendingRoomRejoin;
-    pendingRoomRejoin = null;
     const nick = getNickname() || localStorage.getItem('mafia_nickname') || '플레이어';
-    socket.emit('join', { userID, nickname: nick, roomCode: code });
+    socket.emit('join', { userID, nickname: nick, roomCode: code, autoReconnect: true });
     return;
   }
   pendingRoomRejoin = null;
+  rejoinAttempts = 0;
+  $('#reconnect-banner').hidden = true;
 
   state = data;
   if (data.roomCode) localStorage.setItem('mafia_roomCode', data.roomCode);
@@ -1643,7 +1681,10 @@ socket.on('gameOver', (data) => {
   showToast(data.message);
 });
 
-socket.on('error', (data) => showToast(data.message));
+socket.on('error', (data) => {
+  if (!data || data.silent) return;
+  showToast(data.message);
+});
 
 /* ─── UI bindings ───────────────────────────────────────────────────────────── */
 

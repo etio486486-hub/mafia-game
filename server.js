@@ -1980,12 +1980,22 @@ function attachSession(socket, userID, nickname) {
 
 function tryResumeSession(socket) {
   const sess = sessions.get(socket.userID);
-  if (!sess || !sess.roomCode || !rooms.has(sess.roomCode)) return false;
+  if (!sess || !sess.roomCode) return false;
+
+  if (!rooms.has(sess.roomCode)) {
+    console.log(`[SESSION] room ${sess.roomCode} gone — clear session userID=${socket.userID}`);
+    emitRoomLost(socket, { silent: true });
+    return true;
+  }
 
   const room = rooms.get(sess.roomCode);
   const player = (sess.playerId && room.players[sess.playerId])
     || getPlayerByUserId(room, socket.userID);
-  if (!player) return false;
+  if (!player) {
+    sess.roomCode = null;
+    sess.playerId = null;
+    return false;
+  }
 
   reconnectPlayer(socket, room, player);
   return true;
@@ -2154,8 +2164,22 @@ function getViewer(room, socket) {
   return getPlayerByUserId(room, socket.userID);
 }
 
-function reject(socket, msg) {
-  socket.emit('error', { message: msg });
+function reject(socket, msg, opts = {}) {
+  socket.emit('error', { message: msg, silent: !!opts.silent, code: opts.code || null });
+}
+
+function emitRoomLost(socket, { silent = true } = {}) {
+  const sess = socket.userID ? sessions.get(socket.userID) : null;
+  if (sess) {
+    sess.roomCode = null;
+    sess.playerId = null;
+  }
+  socket.emit('joinResult', { ok: false, reason: 'room_expired', silent });
+  socket.emit('stateSync', {
+    phase: 'none',
+    roomExpired: true,
+    serverInfo: getServerInfoFromSocket(socket)
+  });
 }
 
 function recordMafiaVote(room, socket, targetId) {
@@ -2350,7 +2374,7 @@ io.on('connection', (socket) => {
     socket.emit('stateSync', { phase: 'none', serverInfo: getServerInfoFromSocket(socket) });
   });
 
-  socket.on('join', ({ userID, nickname, roomCode }) => {
+  socket.on('join', ({ userID, nickname, roomCode, autoReconnect }) => {
     if (!userID || !nickname) return reject(socket, 'userID와 닉네임이 필요합니다.');
     attachSession(socket, userID, nickname);
 
@@ -2361,8 +2385,17 @@ io.on('connection', (socket) => {
     }
 
     if (!rooms.has(code)) {
-      reject(socket, '존재하지 않는 방 코드입니다. 같은 웹 주소로 접속했는지 확인하세요.');
-      socket.emit('stateSync', { phase: 'none', serverInfo: getServerInfoFromSocket(socket) });
+      if (autoReconnect) {
+        emitRoomLost(socket, { silent: true });
+      } else {
+        const sess = sessions.get(userID);
+        if (sess) {
+          sess.roomCode = null;
+          sess.playerId = null;
+        }
+        reject(socket, '존재하지 않는 방 코드입니다. 코드를 확인하거나 새 방을 만들어 주세요.');
+        socket.emit('stateSync', { phase: 'none', serverInfo: getServerInfoFromSocket(socket) });
+      }
       return;
     }
 
