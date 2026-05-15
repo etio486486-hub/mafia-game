@@ -71,8 +71,8 @@ const ROLE_GUIDE = {
   },
   [ROLE.POLICE]: {
     name: '경찰', team: '시민 팀',
-    desc: '밤에 한 명을 수색해 마피아인지 조사합니다. 결과는 본인에게만 공개됩니다.',
-    tip: '밤 → 대상 선택 → 마피아 수색'
+    desc: '밤에 한 명을 수색해 마피아인지 조사합니다. 낮에 「조결」「경찰조사」 등으로 공개 요청 시 조사한 대상만 발표합니다.',
+    tip: '밤 수색 · 낮 채팅으로 조결 공개'
   },
   [ROLE.DOCTOR]: {
     name: '의사', team: '시민 팀',
@@ -86,8 +86,8 @@ const ROLE_GUIDE = {
   },
   [ROLE.POLITICIAN]: {
     name: '정치인', team: '시민 팀',
-    desc: '투표로 죽지 않습니다. 처형 투표에서 과반이 찬성해도 처형이 부결됩니다.',
-    tip: '능력 사용 없음 — 투표 면역'
+    desc: '낮 투표에서 표 2개를 행사합니다. 찬반 처형 투표에서는 처형되지 않습니다(면역).',
+    tip: '낮 투표 2표 · 찬반 면역'
   },
   [ROLE.MEDIUM]: {
     name: '영매', team: '시민 팀',
@@ -105,6 +105,15 @@ const ROLE_GUIDE = {
     tip: '첫 밤 이후 새 직업 확인'
   }
 };
+
+const M42_GLOSSARY = [
+  { term: '직공', mean: '직업 공개' },
+  { term: '조결', mean: '경찰 조사 결과' },
+  { term: '자투', mean: '자신에게 투표해 무투표로 넘기기' },
+  { term: '조밤', mean: '밤에 아무도 사망하지 않음' },
+  { term: '투갈', mean: '최다 득표 동점으로 처형 없음' },
+  { term: '접선', mean: '스파이가 마피아와 합류해 밤챗 사용' }
+];
 
 const FX_MAP = {
   'anim-mafia-kill': { cls: 'fx-kill', text: '살해!' },
@@ -645,6 +654,7 @@ function renderFromState() {
   $('#alive-count-label').textContent = `(${alive}생존)`;
 
   renderRoleGuide();
+  renderM42Glossary();
   renderTimeButtons();
   renderPlayerGrid();
   renderActionPanel();
@@ -1035,6 +1045,23 @@ function renderGameInfo() {
   $('#alive-count-label').textContent = `(${alive}생존)`;
 }
 
+function renderM42Glossary() {
+  let list = $('#m42-glossary-list');
+  if (!list) {
+    const anchor = document.querySelector('.role-guide-card');
+    if (!anchor || document.querySelector('.m42-glossary-card')) return;
+    const details = document.createElement('details');
+    details.className = 'm42-fold info-card m42-glossary-card';
+    details.innerHTML = '<summary>마피아42 용어</summary><ul id="m42-glossary-list" class="m42-glossary-list"></ul>';
+    anchor.insertAdjacentElement('afterend', details);
+    list = $('#m42-glossary-list');
+  }
+  if (!list) return;
+  list.innerHTML = M42_GLOSSARY.map((g) =>
+    `<li><strong>${escapeHtml(g.term)}</strong> — ${escapeHtml(g.mean)}</li>`
+  ).join('');
+}
+
 function renderRoleGuide() {
   const myRole = state.myRole;
   const detail = $('#my-role-detail');
@@ -1104,8 +1131,14 @@ function renderPlayerGrid() {
       ? `<button type="button" class="slot-target-btn${selectedTargetId === p.id || state.myDayVoteTarget === p.id ? ' active' : ''}" data-target-id="${p.id}" title="능력/투표 대상">◎</button>`
       : '';
 
+    const liveVotes = state.dayVoteLiveTally && state.dayVoteLiveTally[p.id];
+    const voteBadge = (state.phase === 'day_vote' && liveVotes)
+      ? `<span class="vote-live-badge" title="실시간 득표(가중)">${liveVotes}</span>`
+      : '';
+
     return `<div class="${cls}" data-id="${p.id}">` +
       `<span class="slot-num">${i + 1}</span>` +
+      voteBadge +
       targetBtn +
       `<span class="slot-key">F${i + 1}</span>` +
       `<button type="button" class="slot-select${canSelect ? '' : ' is-disabled'}" data-target-id="${p.id}" title="${canSelect ? '능력/투표 대상 선택' : ''}"${canSelect ? '' : ' disabled'}>` +
@@ -1172,13 +1205,16 @@ function renderActionPanel() {
       hint.textContent = '이 밤에는 사용할 능력이 없습니다.';
     }
   } else if (state.phase === 'day_vote') {
-    if (state.myDayVoteTarget) {
+    const weightHint = (state.myDayVoteWeight || 1) > 1 ? ' (정치인 2표)' : '';
+    if (state.dayVoteTallyHidden) {
+      hint.textContent = `투표 종료 5초 전 — 득표가 비공개됩니다.${weightHint}`;
+    } else if (state.myDayVoteTarget) {
       const voted = state.players.find(p => p.id === state.myDayVoteTarget);
       hint.textContent = voted
-        ? `${voted.nickname}에게 투표했습니다. 같은 플레이어를 다시 누르면 취소됩니다.`
-        : '플레이어를 눌러 투표하세요. 같은 대상을 다시 누르면 취소됩니다.';
+        ? `${voted.nickname}에게 투표했습니다${weightHint}. 같은 플레이어를 다시 누르면 취소됩니다.`
+        : `플레이어를 눌러 투표하세요${weightHint}.`;
     } else {
-      hint.textContent = '플레이어를 눌러 바로 투표하세요.';
+      hint.textContent = `플레이어를 눌러 바로 투표하세요${weightHint}.`;
     }
   } else if (state.phase === 'execution_vote') {
     if (state.myPlayerId === state.executionCandidateId) {
@@ -1197,7 +1233,7 @@ function renderActionPanel() {
   } else if (state.phase === 'dawn') {
     hint.textContent = '밤 결과를 확인하는 중입니다. 대화는 낮 토론부터 가능합니다.';
   } else if (state.phase === 'day_chat') {
-    hint.textContent = '자유롭게 토론하세요.';
+    hint.textContent = '토론 시간은 생존자 수×15초입니다. 직공·조결·자투 등은 채팅으로 요청할 수 있습니다.';
   } else {
     hint.textContent = '';
   }
