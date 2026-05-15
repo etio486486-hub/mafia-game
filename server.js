@@ -373,10 +373,151 @@ function pickRandomTarget(room, actor, opts = {}) {
     if (excludeSelf && p.id === actor.id) return false;
     if (excludeIds.includes(p.id)) return false;
     if (opts.excludeMafia && isMafiaRole(p.role)) return false;
+    if (opts.excludeMafiaTeam && isMafiaTeam(p.role)) return false;
     return true;
   });
   if (!candidates.length) return null;
   return candidates[Math.floor(Math.random() * candidates.length)].id;
+}
+
+const CHAT_ACCUSE_PATTERNS = [
+  /마피아/, /의심/, /수상/, /이상/, /거짓/, /범인/, /살인/, /죽였/, /죽인/,
+  /처형/, /지목/, /투표해/, /공범/, /거짓말/, /거짓/, /속였/, /거짓말/, /거짓/
+];
+
+const CHAT_DEFEND_PATTERNS = [
+  /아니에요/, /아닙니다/, /억울/, /무고/, /믿어/, /시민/, /아니야/, /아니요/
+];
+
+const BOT_ACCUSE_LINES = [
+  (name) => `${name}님이 좀 수상한데요.`,
+  (name) => `${name} 말이 앞뒤가 안 맞는 것 같아요.`,
+  (name) => `저는 ${name}님을 의심합니다.`,
+  (name) => `${name} 쪽이 마피아 같아요.`,
+  (name) => `아까 ${name}님 말 들어보니 이상했어요.`
+];
+
+function findPlayersMentionedInText(room, text) {
+  if (!text) return [];
+  const mentioned = [];
+  for (const p of Object.values(room.players)) {
+    if (p.nickname && text.includes(p.nickname)) mentioned.push(p.id);
+  }
+  return mentioned;
+}
+
+function buildSuspicionScores(room, voter) {
+  const scores = {};
+  const aliveOthers = getAlivePlayers(room).filter(p => p.id !== voter.id);
+  aliveOthers.forEach(p => { scores[p.id] = 1; });
+
+  const dayChat = (room.chatLog && room.chatLog.day) ? room.chatLog.day : [];
+  for (const msg of dayChat) {
+    if (msg.system || !msg.text) continue;
+    const text = msg.text;
+    const mentioned = findPlayersMentionedInText(room, text);
+    const accuse = CHAT_ACCUSE_PATTERNS.some(p => p.test(text));
+    const defend = CHAT_DEFEND_PATTERNS.some(p => p.test(text));
+
+    for (const id of mentioned) {
+      if (id === voter.id) continue;
+      const target = getPlayerById(room, id);
+      if (!target || !target.alive) continue;
+      if (accuse) scores[id] = (scores[id] || 0) + 4;
+      if (defend) scores[id] = Math.max(0, (scores[id] || 0) - 3);
+    }
+
+    if (/투표|지목|처형/.test(text)) {
+      for (const id of mentioned) {
+        if (id !== voter.id) scores[id] = (scores[id] || 0) + 2;
+      }
+    }
+  }
+
+  if (isMafiaTeam(voter.role)) {
+    for (const p of aliveOthers) {
+      if (isMafiaTeam(p.role)) scores[p.id] = Math.max(0, (scores[p.id] || 0) - 8);
+      else scores[p.id] = (scores[p.id] || 0) + 3;
+    }
+  }
+
+  return scores;
+}
+
+function pickWeightedFromScores(scores) {
+  const entries = Object.entries(scores).filter(([, w]) => w > 0);
+  if (!entries.length) return null;
+  const total = entries.reduce((s, [, w]) => s + w, 0);
+  let roll = Math.random() * total;
+  for (const [id, w] of entries) {
+    roll -= w;
+    if (roll <= 0) return id;
+  }
+  return entries[entries.length - 1][0];
+}
+
+function pickBotDayVoteTarget(room, bot) {
+  const scores = buildSuspicionScores(room, bot);
+  const fromChat = pickWeightedFromScores(scores);
+  if (fromChat) return fromChat;
+
+  if (isMafiaTeam(bot.role)) {
+    return pickRandomTarget(room, bot, { excludeMafiaTeam: true });
+  }
+  return pickRandomTarget(room, bot);
+}
+
+function applyBotDayVote(room, bot) {
+  const g = room.game;
+  if (!g || g.dayVotes[bot.id]) return false;
+  const targetId = pickBotDayVoteTarget(room, bot);
+  if (!targetId) return false;
+  g.dayVotes[bot.id] = targetId;
+  console.log(`[BOT] ${bot.nickname} day-votes ${playerName(room, targetId)}`);
+  return true;
+}
+
+function runBotDayVotes(room) {
+  if (room.phase !== PHASE.DAY_VOTE || !room.game) return;
+  const bots = getBots(room).filter(p => p.alive);
+  let voted = 0;
+  for (const bot of bots) {
+    if (applyBotDayVote(room, bot)) voted++;
+  }
+  if (voted > 0) broadcastState(room);
+}
+
+function scheduleBotDayVotes(room) {
+  if (!hasBots(room)) return;
+  const delays = [1000, 3500, 7000, 11000];
+  delays.forEach((ms) => {
+    scheduleRoomTask(room, () => runBotDayVotes(room), ms);
+  });
+}
+
+function runBotDayChat(room) {
+  if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
+  const bots = getBots(room).filter(p => p.alive);
+  if (!bots.length || Math.random() > 0.4) return;
+
+  const bot = bots[Math.floor(Math.random() * bots.length)];
+  const targetId = pickBotDayVoteTarget(room, bot);
+  const target = getPlayerById(room, targetId);
+  if (!target || target.id === bot.id) return;
+
+  const lineFn = BOT_ACCUSE_LINES[Math.floor(Math.random() * BOT_ACCUSE_LINES.length)];
+  const msg = { from: bot.nickname, fromId: bot.id, text: lineFn(target.nickname), time: Date.now() };
+  pushChat(room, 'day', msg);
+  broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
+  console.log(`[BOT] ${bot.nickname} day-chat suspects ${target.nickname}`);
+}
+
+function scheduleBotDayChat(room) {
+  if (!hasBots(room)) return;
+  const duration = TIMERS[PHASE.DAY_CHAT];
+  [15000, 45000, 80000, 100000].filter(ms => ms < duration - 5000).forEach((ms) => {
+    scheduleRoomTask(room, () => runBotDayChat(room), ms);
+  });
 }
 
 function createBotPlayer(room) {
@@ -886,19 +1027,23 @@ function runBotActions(room) {
   }
 
   if (room.phase === PHASE.DAY_VOTE) {
-    bots.forEach(bot => {
-      if (!g.dayVotes[bot.id]) {
-        g.dayVotes[bot.id] = pickRandomTarget(room, bot);
-      }
-    });
-    console.log('[BOT] day votes applied');
+    runBotDayVotes(room);
+    return;
   }
 
   if (room.phase === PHASE.EXECUTION_VOTE) {
     bots.forEach(bot => {
       if (bot.id === g.executionCandidateId) return;
-      if (!g.executionVotes[bot.id]) {
-        g.executionVotes[bot.id] = Math.random() < 0.6 ? 'yes' : 'no';
+      if (g.executionVotes[bot.id]) return;
+      const votedForCandidate = g.dayVotes[bot.id] === g.executionCandidateId;
+      const suspect = buildSuspicionScores(room, bot);
+      const candidateScore = suspect[g.executionCandidateId] || 0;
+      if (votedForCandidate || candidateScore >= 4) {
+        g.executionVotes[bot.id] = 'yes';
+      } else if (candidateScore <= 1 && Math.random() < 0.55) {
+        g.executionVotes[bot.id] = 'no';
+      } else {
+        g.executionVotes[bot.id] = Math.random() < 0.55 ? 'yes' : 'no';
       }
     });
     console.log('[BOT] execution votes applied');
@@ -1073,12 +1218,14 @@ function startDayChat(room) {
   room.game.executionCandidateId = null;
   room.game.dawnAnnouncements = [];
   setPhase(room, PHASE.DAY_CHAT, TIMERS[PHASE.DAY_CHAT]);
+  scheduleBotDayChat(room);
 }
 
 function startDayVote(room) {
   room.game.dayVotes = {};
   setPhase(room, PHASE.DAY_VOTE, TIMERS[PHASE.DAY_VOTE]);
   broadcastAnimation(room, 'anim-vote');
+  scheduleBotDayVotes(room);
 }
 
 function startLastWords(room, candidateId) {
@@ -1789,6 +1936,7 @@ function recordMediumPurify(room, socket, targetId) {
 
 function recordDayVote(room, socket, targetId) {
   if (!room || !room.game) return reject(socket, '방을 찾을 수 없습니다.');
+  const player = getViewer(room, socket);
   if (!player || !player.alive) return reject(socket, '생존자만 투표할 수 있습니다.');
   if (room.phase !== PHASE.DAY_VOTE) return reject(socket, '투표 시간이 아닙니다.');
   if (!targetId || room.game.dayVotes[player.id] === targetId) {
