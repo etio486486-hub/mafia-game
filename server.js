@@ -257,7 +257,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14d',
+    stability: '2026-05-14e',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -903,8 +903,7 @@ botBrain.configure({
   isPoliceReportRequest,
   buildPolicePublicReport,
   isRoleClaimRequest,
-  isSelfVoteRequest,
-  ROLE_LABELS
+  isSelfVoteRequest
 });
 
 function pickBotKillTarget(room, mafiaBot) {
@@ -1603,21 +1602,15 @@ function runBotActions(room) {
   }
 
   if (room.phase === PHASE.EXECUTION_VOTE) {
-    bots.forEach(bot => {
+    const candidate = getPlayerById(room, g.executionCandidateId);
+    bots.forEach((bot) => {
       if (bot.id === g.executionCandidateId) return;
       if (g.executionVotes[bot.id]) return;
-      const votedForCandidate = g.dayVotes[bot.id] === g.executionCandidateId;
-      const suspect = buildSuspicionScores(room, bot);
-      const candidateScore = suspect[g.executionCandidateId] || 0;
-      if (votedForCandidate || candidateScore >= 4) {
-        g.executionVotes[bot.id] = 'yes';
-      } else if (candidateScore <= 1 && Math.random() < 0.55) {
-        g.executionVotes[bot.id] = 'no';
-      } else {
-        g.executionVotes[bot.id] = Math.random() < 0.55 ? 'yes' : 'no';
+      if (candidate) {
+        g.executionVotes[bot.id] = botBrain.pickBotExecutionVote(room, bot, candidate);
       }
     });
-    console.log('[BOT] execution votes applied');
+    console.log('[BOT] execution votes applied (m42)');
   }
 
   if (room.phase === PHASE.LAST_WORDS) {
@@ -1625,10 +1618,7 @@ function runBotActions(room) {
     const candidate = getPlayerById(room, g.executionCandidateId);
     if (candidate && candidate.isBot) {
       room.botLastWordsSent = true;
-      const lines = isMafiaTeam(candidate.role)
-        ? ['저는 일반 시민입니다… 오해입니다!', '누명이에요! 다른 사람을 봐주세요.', '제가 마피아일 리가 없잖아요!']
-        : ['저는 억울합니다…', '잘못된 지목입니다!', '다시 생각해보세요, 저는 시민이에요.'];
-      const text = lines[Math.floor(Math.random() * lines.length)];
+      const text = botBrain.generateBotLastWords(room, candidate);
       const msg = { from: candidate.nickname, fromId: candidate.id, text, time: Date.now() };
       pushChat(room, 'lastWords', msg);
       broadcastToRoom(room, 'chatMessage', { channel: 'lastWords', ...msg });
