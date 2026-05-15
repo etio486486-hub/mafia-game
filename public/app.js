@@ -270,9 +270,10 @@ let phaseEndEstimate = 0;
 const socket = io({
   reconnection: true,
   reconnectionDelay: 1000,
-  reconnectionAttempts: 30,
+  reconnectionDelayMax: 5000,
+  reconnectionAttempts: Infinity,
   transports: ['polling', 'websocket'],
-  timeout: 20000
+  timeout: 25000
 });
 let socketConnected = false;
 
@@ -1367,6 +1368,14 @@ socket.on('connect', () => {
     socket.emit('join', { userID, nickname: nick || '플레이어', roomCode: savedRoom });
   } else if (nick) {
     socket.emit('join', { userID, nickname: nick, roomCode: null });
+  }
+});
+
+socket.io.on('reconnect', () => {
+  const savedRoom = localStorage.getItem('mafia_roomCode');
+  const nick = getNickname() || localStorage.getItem('mafia_nickname') || '플레이어';
+  if (savedRoom) {
+    socket.emit('join', { userID, nickname: nick, roomCode: savedRoom });
   }
 });
 

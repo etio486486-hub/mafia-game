@@ -336,13 +336,17 @@ function bumpRoomTaskGeneration(room) {
 
 function scheduleRoomTask(room, fn, delayMs) {
   if (!room) return;
-  const gen = (room.taskGeneration || 0) + 1;
-  room.taskGeneration = gen;
+  const gen = room.taskGeneration || 0;
   setTimeout(() => {
     if (!rooms.has(room.code)) return;
-    if (room.taskGeneration !== gen) return;
+    if ((room.taskGeneration || 0) !== gen) return;
     try {
-      fn();
+      const result = fn();
+      if (result && typeof result.then === 'function') {
+        result.catch((err) => {
+          console.error(`[ROOM TASK async] room=${room.code}`, err);
+        });
+      }
     } catch (err) {
       console.error(`[ROOM TASK] room=${room.code}`, err);
     }
@@ -676,35 +680,40 @@ function scheduleBotDayVotes(room) {
   });
 }
 
-async function runBotDayChat(room) {
+function postBotDayMessage(room, bot, text) {
+  if (!text || room.phase !== PHASE.DAY_CHAT) return;
+  const msg = { from: bot.nickname, fromId: bot.id, text, time: Date.now() };
+  pushChat(room, 'day', msg);
+  broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
+  console.log(`[BOT] ${bot.nickname} day-chat: ${text.slice(0, 40)}`);
+}
+
+async function runBotDayChat(room, { force = false } = {}) {
   if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
-  if (room.botChatInFlight) return;
   const bots = getBots(room).filter(p => p.alive);
-  if (!bots.length || Math.random() > 0.55) return;
+  if (!bots.length) return;
+  if (!force && Math.random() > 0.12) return;
 
-  const bot = bots[Math.floor(Math.random() * bots.length)];
-  room.botChatInFlight = true;
-  try {
-    const text = await botBrain.generateBotChat(room, bot);
-    if (!text || room.phase !== PHASE.DAY_CHAT) return;
-
-    const msg = { from: bot.nickname, fromId: bot.id, text, time: Date.now() };
-    pushChat(room, 'day', msg);
-    broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
-    console.log(`[BOT] ${bot.nickname} day-chat: ${text.slice(0, 40)}`);
-  } catch (err) {
-    console.warn('[BOT] day-chat error', err.message);
-  } finally {
-    room.botChatInFlight = false;
+  const speakers = shuffle(bots).slice(0, bots.length >= 3 && Math.random() < 0.4 ? 2 : 1);
+  for (const bot of speakers) {
+    if (room.phase !== PHASE.DAY_CHAT) break;
+    try {
+      const text = await botBrain.generateBotChat(room, bot);
+      postBotDayMessage(room, bot, text);
+    } catch (err) {
+      console.warn('[BOT] day-chat error', err.message);
+    }
   }
 }
 
 function scheduleBotDayChat(room) {
   if (!hasBots(room)) return;
   const duration = TIMERS[PHASE.DAY_CHAT];
-  const slots = [12000, 28000, 50000, 75000, 95000].filter(ms => ms < duration - 8000);
-  slots.forEach((ms) => {
-    scheduleRoomTask(room, () => runBotDayChat(room), ms);
+  const slots = [3500, 14000, 28000, 45000, 62000, 82000, 100000]
+    .filter(ms => ms < duration - 5000);
+  slots.forEach((ms, i) => {
+    const force = i === 0;
+    scheduleRoomTask(room, () => runBotDayChat(room, { force }), ms);
   });
 }
 
@@ -1306,8 +1315,10 @@ function clearPhaseTimer(room) {
 
 function setPhase(room, phase, durationMs) {
   clearPhaseTimer(room);
+  bumpRoomTaskGeneration(room);
   room.botActionGeneration = (room.botActionGeneration || 0) + 1;
   room.phase = phase;
+  room.botChatInFlight = false;
   room.phaseEndsAt = durationMs ? Date.now() + durationMs : null;
   if (phase === PHASE.LAST_WORDS) room.botLastWordsSent = false;
 
@@ -2456,6 +2467,16 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason) => {
   console.error('[FATAL] unhandledRejection', reason);
+});
+
+process.on('SIGTERM', () => {
+  console.log('[SERVER] SIGTERM — shutting down gracefully');
+  for (const room of rooms.values()) {
+    clearPhaseTimer(room);
+    bumpRoomTaskGeneration(room);
+  }
+  httpServer.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 5000).unref();
 });
 
 httpServer.listen(PORT, HOST, () => {
