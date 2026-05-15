@@ -283,6 +283,20 @@ let rejoinAttempts = 0;
 const MAX_REJOIN_ATTEMPTS = 1;
 let keepAliveTimer = null;
 let disconnectBannerTimer = null;
+let chatRenderTimer = null;
+
+function queueChatRender(channel) {
+  if (channel === 'lobby') {
+    renderLobbyChat();
+    return;
+  }
+  if (channel !== 'day' && activeChatChannel !== channel) return;
+  if (chatRenderTimer) return;
+  chatRenderTimer = setTimeout(() => {
+    chatRenderTimer = null;
+    renderChat();
+  }, 150);
+}
 
 function startKeepAlive() {
   if (keepAliveTimer) return;
@@ -1663,13 +1677,13 @@ socket.on('chatMessage', (data) => {
   if (ch === 'day') {
     if (!chatStore.day) chatStore.day = [];
     chatStore.day.push(data);
-    if (activeChatChannel === 'day') renderChat();
+    if (activeChatChannel === 'day') queueChatRender('day');
     return;
   }
   if (!chatStore[ch]) chatStore[ch] = [];
   chatStore[ch].push(data);
   if (ch === 'lobby') renderLobbyChat();
-  else if (activeChatChannel === ch) renderChat();
+  else if (activeChatChannel === ch) queueChatRender(ch);
 });
 
 socket.on('reporterReveal', (data) => {

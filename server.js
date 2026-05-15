@@ -182,6 +182,14 @@ const GRACE_PERIOD_MS = 60000;
 const TIME_ADJUST_MS = 10000;
 const MIN_PHASE_REMAINING_MS = 5000;
 
+/** Bot day-chat rate limits (prevents socket flood / disconnects) */
+const BOT_CHAT = {
+  MIN_GAP_MS: 8000,
+  MAX_PER_DAY_PHASE: 10,
+  HUMAN_REPLY_WAIT_MS: 4000,
+  SCHEDULED_SLOTS_MS: [10000, 45000, 85000]
+};
+
 const PHASE = {
   LOBBY: 'lobby',
   NIGHT: 'night',
@@ -346,12 +354,45 @@ function isActiveGame(room) {
   return !!(room && room.game && room.phase !== PHASE.GAME_OVER && !room.game.winner);
 }
 
+function clearBotChatTimers(room) {
+  if (!room) return;
+  if (room._botHumanReplyTimer) {
+    clearTimeout(room._botHumanReplyTimer);
+    room._botHumanReplyTimer = null;
+  }
+  room.botChatInFlight = false;
+}
+
+function resetBotChatStats(room) {
+  if (!room || !room.game) return;
+  room.game.botChatStats = { count: 0, lastAt: 0 };
+}
+
+function canBotChatNow(room) {
+  if (!room || !room.game || room.botChatInFlight) return false;
+  const st = room.game.botChatStats || { count: 0, lastAt: 0 };
+  room.game.botChatStats = st;
+  const now = Date.now();
+  if (st.count >= BOT_CHAT.MAX_PER_DAY_PHASE) return false;
+  if (st.lastAt && now - st.lastAt < BOT_CHAT.MIN_GAP_MS) return false;
+  return true;
+}
+
+function recordBotChat(room) {
+  if (!room || !room.game) return;
+  const st = room.game.botChatStats || { count: 0, lastAt: 0 };
+  st.count = (st.count || 0) + 1;
+  st.lastAt = Date.now();
+  room.game.botChatStats = st;
+}
+
 function bumpRoomTaskGeneration(room) {
   if (!room) return;
   if (room._broadcastStateTimer) {
     clearTimeout(room._broadcastStateTimer);
     room._broadcastStateTimer = null;
   }
+  clearBotChatTimers(room);
   room.taskGeneration = (room.taskGeneration || 0) + 1;
   room.botActionGeneration = (room.botActionGeneration || 0) + 1;
   room.resolvingDayVote = false;
@@ -708,55 +749,47 @@ function postBotDayMessage(room, bot, text) {
   const msg = { from: bot.nickname, fromId: bot.id, text, time: Date.now() };
   pushChat(room, 'day', msg);
   broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
+  recordBotChat(room);
   console.log(`[BOT] ${bot.nickname} day-chat: ${text.slice(0, 40)}`);
 }
 
-async function runBotDayChat(room, { force = false, replyToHuman = false } = {}) {
+async function runBotDayChat(room) {
   if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
+  if (!canBotChatNow(room)) return;
+
   const bots = getBots(room).filter(p => p.alive);
   if (!bots.length) return;
 
-  const now = Date.now();
-  const minGap = replyToHuman ? 1200 : 4000;
-  if (!force && room.lastBotDayChatAt && now - room.lastBotDayChatAt < minGap) return;
-  room.lastBotDayChatAt = now;
-
-  const speakerCount = replyToHuman
-    ? Math.min(3, bots.length)
-    : (bots.length >= 3 && Math.random() < 0.45 ? 2 : 1);
-  const speakers = shuffle(bots).slice(0, speakerCount);
-
-  for (let i = 0; i < speakers.length; i++) {
-    const bot = speakers[i];
-    if (room.phase !== PHASE.DAY_CHAT) break;
-    try {
-      const text = await botBrain.generateBotChat(room, bot);
-      postBotDayMessage(room, bot, text);
-      if (speakers.length > 1 && i < speakers.length - 1) {
-        await new Promise((r) => setTimeout(r, 600 + Math.floor(Math.random() * 500)));
-      }
-    } catch (err) {
-      console.warn('[BOT] day-chat error', err.message);
-    }
+  room.botChatInFlight = true;
+  try {
+    const bot = shuffle(bots)[0];
+    const text = await botBrain.generateBotChat(room, bot);
+    postBotDayMessage(room, bot, text);
+  } catch (err) {
+    console.warn('[BOT] day-chat error', err.message);
+  } finally {
+    room.botChatInFlight = false;
   }
 }
 
 function scheduleBotReplyToHuman(room) {
   if (!hasBots(room) || room.phase !== PHASE.DAY_CHAT) return;
-  [1200, 2800, 4500].forEach((ms) => {
-    scheduleRoomTask(room, () => runBotDayChat(room, { force: true, replyToHuman: true }), ms);
-  });
+  if (room._botHumanReplyTimer) clearTimeout(room._botHumanReplyTimer);
+  room._botHumanReplyTimer = setTimeout(() => {
+    room._botHumanReplyTimer = null;
+    if (room.phase !== PHASE.DAY_CHAT) return;
+    runBotDayChat(room);
+  }, BOT_CHAT.HUMAN_REPLY_WAIT_MS);
 }
 
 function scheduleBotDayChat(room) {
   if (!hasBots(room)) return;
   const duration = TIMERS[PHASE.DAY_CHAT];
-  const slots = [3500, 14000, 28000, 45000, 62000, 82000, 100000]
-    .filter(ms => ms < duration - 5000);
-  slots.forEach((ms, i) => {
-    const force = i === 0;
-    scheduleRoomTask(room, () => runBotDayChat(room, { force }), ms);
-  });
+  BOT_CHAT.SCHEDULED_SLOTS_MS
+    .filter((ms) => ms < duration - 8000)
+    .forEach((ms) => {
+      scheduleRoomTask(room, () => runBotDayChat(room), ms);
+    });
 }
 
 function runBotNightActions(room) {
@@ -1281,10 +1314,6 @@ function flushDawnMotions(room) {
 function runBotActions(room) {
   if (!isActiveGame(room) || room.phase === PHASE.DAWN) return;
 
-  if (room.phase === PHASE.DAY_CHAT && hasBots(room)) {
-    runBotDayChat(room, { force: true });
-  }
-
   const bots = getBots(room).filter(p => p.alive);
   if (!bots.length) return;
 
@@ -1492,6 +1521,8 @@ function startDayChat(room) {
   room.game.executionVotes = {};
   room.game.executionCandidateId = null;
   room.game.dawnAnnouncements = [];
+  resetBotChatStats(room);
+  clearBotChatTimers(room);
   setPhase(room, PHASE.DAY_CHAT, TIMERS[PHASE.DAY_CHAT]);
   scheduleBotDayChat(room);
 }
@@ -2340,7 +2371,7 @@ function handleChat(room, socket, channel, text) {
     }
     pushChat(room, 'day', msg);
     broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
-    if (hasBots(room)) scheduleBotReplyToHuman(room);
+    if (hasBots(room) && !player.isBot) scheduleBotReplyToHuman(room);
   } else if (channel === 'mafia') {
     if (room.phase !== PHASE.NIGHT || !player.alive) return reject(socket, '마피아 채팅 불가');
     if (player.role !== ROLE.MAFIA && !player.joinedMafiaChat) return reject(socket, '권한 없음');
