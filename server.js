@@ -382,11 +382,17 @@ function pickRandomTarget(room, actor, opts = {}) {
 
 const CHAT_ACCUSE_PATTERNS = [
   /마피아/, /의심/, /수상/, /이상/, /거짓/, /범인/, /살인/, /죽였/, /죽인/,
-  /처형/, /지목/, /투표해/, /공범/, /거짓말/, /거짓/, /속였/, /거짓말/, /거짓/
+  /처형/, /지목/, /투표/, /공범/, /속였/, /거짓말/, /거짓/, /거짓말쟁이/,
+  /수상해/, /수상한/, /이상해/, /이상한/, /거슬/, /불안/, /기억해/, /기억이/
 ];
 
 const CHAT_DEFEND_PATTERNS = [
-  /아니에요/, /아닙니다/, /억울/, /무고/, /믿어/, /시민/, /아니야/, /아니요/
+  /아니에요/, /아닙니다/, /억울/, /무고/, /믿어/, /시민/, /아니야/, /아니요/,
+  /누명/, /오해/, /잘못/, /아닌데/, /진짜/
+];
+
+const CHAT_TRUST_PATTERNS = [
+  /믿어/, /신뢰/, /시민인 것 같/, /마피아 아닌/, /아닌 것 같/, /확신/, /보호/
 ];
 
 const BOT_ACCUSE_LINES = [
@@ -394,13 +400,66 @@ const BOT_ACCUSE_LINES = [
   (name) => `${name} 말이 앞뒤가 안 맞는 것 같아요.`,
   (name) => `저는 ${name}님을 의심합니다.`,
   (name) => `${name} 쪽이 마피아 같아요.`,
-  (name) => `아까 ${name}님 말 들어보니 이상했어요.`
+  (name) => `아까 ${name}님 말 들어보니 이상했어요.`,
+  (name) => `낮 동안 ${name}님 태도가 수상했습니다.`,
+  (name) => `${name}님이 너무 조용한 것도 이상해요.`
 ];
+
+const BOT_AGREE_LINES = [
+  (name) => `저도 ${name}님이 의심스럽습니다.`,
+  (name) => `맞아요, ${name} 쪽을 지켜봐야 할 것 같아요.`,
+  (name) => `${name}에게 투표하는 게 맞는 것 같아요.`
+];
+
+const BOT_DEFEND_LINES = [
+  () => '저는 시민입니다. 잘못 지목하지 마세요.',
+  () => '억울합니다. 저는 마피아가 아니에요.',
+  () => '아까 제 말은 오해된 것 같아요.'
+];
+
+const BOT_ANALYZE_LINES = [
+  (name) => `${name}님이 어제 밤 이후 태도가 바뀐 것 같아요.`,
+  () => '밤에 죽은 사람 기준으로 다시 추리해봅시다.',
+  () => '지금까지 채팅 보면 한 명이 유독 수상합니다.'
+];
+
+function ensureBotMinds(room) {
+  const g = room.game;
+  if (!g.botMinds) g.botMinds = {};
+  return g.botMinds;
+}
+
+function getBotMind(room, botId) {
+  const minds = ensureBotMinds(room);
+  if (!minds[botId]) {
+    minds[botId] = { knownRoles: {}, trust: {}, accused: {} };
+  }
+  return minds[botId];
+}
+
+function botLearnRole(room, botId, targetId, role) {
+  if (!botId || !targetId || !role) return;
+  getBotMind(room, botId).knownRoles[targetId] = role;
+}
+
+function getChatMessages(room, channel) {
+  return (room.chatLog && room.chatLog[channel]) ? room.chatLog[channel] : [];
+}
+
+function countChatMessagesByPlayer(room, channel) {
+  const counts = {};
+  for (const msg of getChatMessages(room, channel)) {
+    if (msg.system || !msg.fromId) continue;
+    counts[msg.fromId] = (counts[msg.fromId] || 0) + 1;
+  }
+  return counts;
+}
 
 function findPlayersMentionedInText(room, text) {
   if (!text) return [];
   const mentioned = [];
-  for (const p of Object.values(room.players)) {
+  const sorted = Object.values(room.players).sort((a, b) => b.nickname.length - a.nickname.length);
+  for (const p of sorted) {
     if (p.nickname && text.includes(p.nickname)) mentioned.push(p.id);
   }
   return mentioned;
@@ -408,23 +467,48 @@ function findPlayersMentionedInText(room, text) {
 
 function buildSuspicionScores(room, voter) {
   const scores = {};
+  const g = room.game;
   const aliveOthers = getAlivePlayers(room).filter(p => p.id !== voter.id);
   aliveOthers.forEach(p => { scores[p.id] = 1; });
 
-  const dayChat = (room.chatLog && room.chatLog.day) ? room.chatLog.day : [];
+  const dayChat = getChatMessages(room, 'day');
+  const accuseCount = {};
+  const defendCount = {};
+  const trustCount = {};
+
   for (const msg of dayChat) {
     if (msg.system || !msg.text) continue;
     const text = msg.text;
     const mentioned = findPlayersMentionedInText(room, text);
     const accuse = CHAT_ACCUSE_PATTERNS.some(p => p.test(text));
     const defend = CHAT_DEFEND_PATTERNS.some(p => p.test(text));
+    const trust = CHAT_TRUST_PATTERNS.some(p => p.test(text));
+
+    if (accuse) {
+      for (const id of mentioned) {
+        if (id === voter.id) continue;
+        accuseCount[id] = (accuseCount[id] || 0) + 1;
+      }
+    }
+    if (defend && msg.fromId) {
+      defendCount[msg.fromId] = (defendCount[msg.fromId] || 0) + 1;
+      for (const id of mentioned) {
+        if (id !== msg.fromId) scores[id] = Math.max(0, (scores[id] || 0) - 1);
+      }
+    }
+    if (trust && msg.fromId) {
+      trustCount[msg.fromId] = (trustCount[msg.fromId] || 0) + 1;
+      for (const id of mentioned) {
+        if (id !== msg.fromId) scores[id] = Math.max(0, (scores[id] || 0) - 2);
+      }
+    }
 
     for (const id of mentioned) {
       if (id === voter.id) continue;
       const target = getPlayerById(room, id);
       if (!target || !target.alive) continue;
-      if (accuse) scores[id] = (scores[id] || 0) + 4;
-      if (defend) scores[id] = Math.max(0, (scores[id] || 0) - 3);
+      if (accuse) scores[id] = (scores[id] || 0) + 3 + (accuseCount[id] || 0);
+      if (defend && msg.fromId === id) scores[id] = Math.max(0, (scores[id] || 0) - 2);
     }
 
     if (/투표|지목|처형/.test(text)) {
@@ -434,18 +518,69 @@ function buildSuspicionScores(room, voter) {
     }
   }
 
+  const chatCounts = countChatMessagesByPlayer(room, 'day');
+  const avgChat = aliveOthers.length
+    ? aliveOthers.reduce((s, p) => s + (chatCounts[p.id] || 0), 0) / aliveOthers.length
+    : 0;
+  for (const p of aliveOthers) {
+    const c = chatCounts[p.id] || 0;
+    if (avgChat >= 2 && c === 0) scores[p.id] = (scores[p.id] || 0) + 2;
+    if (c >= avgChat * 2 && accuseCount[p.id]) scores[p.id] = (scores[p.id] || 0) + 1;
+  }
+
+  if (g && g.dayVotes) {
+    const voteTally = {};
+    for (const targetId of Object.values(g.dayVotes)) {
+      if (!targetId) continue;
+      voteTally[targetId] = (voteTally[targetId] || 0) + 1;
+    }
+    for (const [id, count] of Object.entries(voteTally)) {
+      if (id === voter.id) continue;
+      scores[id] = (scores[id] || 0) + count * 2;
+    }
+  }
+
+  const mind = getBotMind(room, voter.id);
+  for (const [id, role] of Object.entries(mind.knownRoles)) {
+    const p = getPlayerById(room, id);
+    if (!p || !p.alive || id === voter.id) continue;
+    if (isMafiaTeam(voter.role)) {
+      if (!isMafiaTeam(role)) scores[id] = (scores[id] || 0) + 5;
+    } else if (isMafiaRole(role)) {
+      scores[id] = (scores[id] || 0) + 8;
+    } else if (role === ROLE.SPY) {
+      scores[id] = (scores[id] || 0) + 6;
+    }
+  }
+
+
+  if (accuseCount[voter.id] >= 2) {
+    for (const p of aliveOthers) {
+      if (accuseCount[p.id]) scores[p.id] = Math.max(0, (scores[p.id] || 0) - 2);
+    }
+  }
+
   if (isMafiaTeam(voter.role)) {
     for (const p of aliveOthers) {
-      if (isMafiaTeam(p.role)) scores[p.id] = Math.max(0, (scores[p.id] || 0) - 8);
-      else scores[p.id] = (scores[p.id] || 0) + 3;
+      if (isMafiaTeam(p.role)) scores[p.id] = 0;
+      else {
+        const powerRoles = [ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER];
+        if (powerRoles.includes(p.role)) scores[p.id] = (scores[p.id] || 0) + 4;
+        scores[p.id] = (scores[p.id] || 0) + 2;
+      }
+    }
+  } else {
+    for (const p of aliveOthers) {
+      if (trustCount[p.id] >= 2) scores[p.id] = Math.max(0, (scores[p.id] || 0) - 3);
     }
   }
 
   return scores;
 }
 
-function pickWeightedFromScores(scores) {
-  const entries = Object.entries(scores).filter(([, w]) => w > 0);
+function pickWeightedFromScores(scores, excludeIds = []) {
+  const entries = Object.entries(scores)
+    .filter(([id, w]) => w > 0 && !excludeIds.includes(id));
   if (!entries.length) return null;
   const total = entries.reduce((s, [, w]) => s + w, 0);
   let roll = Math.random() * total;
@@ -456,15 +591,76 @@ function pickWeightedFromScores(scores) {
   return entries[entries.length - 1][0];
 }
 
-function pickBotDayVoteTarget(room, bot) {
+function pickTopSuspect(room, bot, { excludeMafiaTeam = false } = {}) {
   const scores = buildSuspicionScores(room, bot);
-  const fromChat = pickWeightedFromScores(scores);
-  if (fromChat) return fromChat;
-
-  if (isMafiaTeam(bot.role)) {
-    return pickRandomTarget(room, bot, { excludeMafiaTeam: true });
+  const sorted = Object.entries(scores)
+    .filter(([id]) => id !== bot.id)
+    .sort((a, b) => b[1] - a[1]);
+  for (const [id] of sorted) {
+    const p = getPlayerById(room, id);
+    if (!p || !p.alive) continue;
+    if (excludeMafiaTeam && isMafiaTeam(p.role)) continue;
+    return id;
   }
+  return null;
+}
+
+function pickBotDayVoteTarget(room, bot) {
+  const fromChat = pickTopSuspect(room, bot, { excludeMafiaTeam: isMafiaTeam(bot.role) });
+  if (fromChat) return fromChat;
+  if (isMafiaTeam(bot.role)) return pickRandomTarget(room, bot, { excludeMafiaTeam: true });
   return pickRandomTarget(room, bot);
+}
+
+function pickBotKillTarget(room, mafiaBot) {
+  const scores = buildSuspicionScores(room, mafiaBot);
+  for (const p of getAlivePlayers(room)) {
+    if (isMafiaTeam(p.role)) scores[p.id] = 0;
+    if ([ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER].includes(p.role)) {
+      scores[p.id] = (scores[p.id] || 0) + 5;
+    }
+  }
+  return pickWeightedFromScores(scores, [mafiaBot.id]) || pickRandomTarget(room, mafiaBot, { excludeMafiaTeam: true });
+}
+
+function pickBotHealTarget(room, doctorBot) {
+  const scores = buildSuspicionScores(room, doctorBot);
+  const selfSuspicion = scores[doctorBot.id] || 0;
+  if (selfSuspicion >= 5) return doctorBot.id;
+
+  const sorted = Object.entries(scores)
+    .filter(([id]) => id !== doctorBot.id)
+    .sort((a, b) => b[1] - a[1]);
+  for (const [id, s] of sorted) {
+    if (s >= 4) return id;
+  }
+  return pickRandomTarget(room, doctorBot, { excludeSelf: false });
+}
+
+function pickBotInvestigateTarget(room, investigator) {
+  return pickTopSuspect(room, investigator) || pickRandomTarget(room, investigator);
+}
+
+function pickBotNightActionTarget(room, bot, role) {
+  switch (role) {
+    case ROLE.MAFIA:
+      return pickBotKillTarget(room, bot);
+    case ROLE.DOCTOR:
+      return pickBotHealTarget(room, bot);
+    case ROLE.POLICE:
+    case ROLE.SPY:
+    case ROLE.REPORTER:
+      return pickBotInvestigateTarget(room, bot);
+    case ROLE.MEDIUM: {
+      const dead = Object.values(room.players).filter(p => !p.alive);
+      if (!dead.length) return null;
+      const scores = buildSuspicionScores(room, bot);
+      dead.sort((a, b) => (scores[b.id] || 0) - (scores[a.id] || 0));
+      return dead[0].id;
+    }
+    default:
+      return null;
+  }
 }
 
 function applyBotDayVote(room, bot) {
@@ -489,34 +685,102 @@ function runBotDayVotes(room) {
 
 function scheduleBotDayVotes(room) {
   if (!hasBots(room)) return;
-  const delays = [1000, 3500, 7000, 11000];
-  delays.forEach((ms) => {
+  [1000, 3500, 7000, 11000].forEach((ms) => {
     scheduleRoomTask(room, () => runBotDayVotes(room), ms);
   });
+}
+
+function pickBotChatLine(room, bot) {
+  const scores = buildSuspicionScores(room, bot);
+  const selfSuspicion = scores[bot.id] || 0;
+  if (selfSuspicion >= 5 && Math.random() < 0.55) {
+    const lineFn = BOT_DEFEND_LINES[Math.floor(Math.random() * BOT_DEFEND_LINES.length)];
+    return lineFn();
+  }
+
+  const targetId = pickBotDayVoteTarget(room, bot);
+  const target = getPlayerById(room, targetId);
+  if (!target || target.id === bot.id) {
+    const lineFn = BOT_ANALYZE_LINES[Math.floor(Math.random() * BOT_ANALYZE_LINES.length)];
+    return typeof lineFn === 'function' ? lineFn(target ? target.nickname : '') : lineFn();
+  }
+
+  const dayChat = getChatMessages(room, 'day');
+  const othersAccused = dayChat.some((msg) => {
+    if (msg.fromId === bot.id || !msg.text) return false;
+    return msg.text.includes(target.nickname) && CHAT_ACCUSE_PATTERNS.some(p => p.test(msg.text));
+  });
+
+  if (othersAccused && Math.random() < 0.5) {
+    const lineFn = BOT_AGREE_LINES[Math.floor(Math.random() * BOT_AGREE_LINES.length)];
+    return lineFn(target.nickname);
+  }
+
+  const lineFn = BOT_ACCUSE_LINES[Math.floor(Math.random() * BOT_ACCUSE_LINES.length)];
+  return lineFn(target.nickname);
 }
 
 function runBotDayChat(room) {
   if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
   const bots = getBots(room).filter(p => p.alive);
-  if (!bots.length || Math.random() > 0.4) return;
+  if (!bots.length || Math.random() > 0.55) return;
 
   const bot = bots[Math.floor(Math.random() * bots.length)];
-  const targetId = pickBotDayVoteTarget(room, bot);
-  const target = getPlayerById(room, targetId);
-  if (!target || target.id === bot.id) return;
+  const text = pickBotChatLine(room, bot);
+  if (!text) return;
 
-  const lineFn = BOT_ACCUSE_LINES[Math.floor(Math.random() * BOT_ACCUSE_LINES.length)];
-  const msg = { from: bot.nickname, fromId: bot.id, text: lineFn(target.nickname), time: Date.now() };
+  const msg = { from: bot.nickname, fromId: bot.id, text, time: Date.now() };
   pushChat(room, 'day', msg);
   broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
-  console.log(`[BOT] ${bot.nickname} day-chat suspects ${target.nickname}`);
+  console.log(`[BOT] ${bot.nickname} day-chat: ${text.slice(0, 40)}`);
 }
 
 function scheduleBotDayChat(room) {
   if (!hasBots(room)) return;
   const duration = TIMERS[PHASE.DAY_CHAT];
-  [15000, 45000, 80000, 100000].filter(ms => ms < duration - 5000).forEach((ms) => {
+  const slots = [12000, 28000, 50000, 75000, 95000].filter(ms => ms < duration - 8000);
+  slots.forEach((ms) => {
     scheduleRoomTask(room, () => runBotDayChat(room), ms);
+  });
+}
+
+function runBotNightActions(room) {
+  if (room.phase !== PHASE.NIGHT || !room.game) return;
+  const bots = getBots(room).filter(p => p.alive);
+  const actions = room.game.nightActions;
+  if (!actions) return;
+
+  const mafiaBots = bots.filter(p => p.role === ROLE.MAFIA);
+  if (mafiaBots.length) {
+    const killTarget = pickBotNightActionTarget(room, mafiaBots[0], ROLE.MAFIA);
+    mafiaBots.forEach(m => { if (killTarget) actions.mafiaVotes[m.id] = killTarget; });
+  }
+
+  for (const bot of bots) {
+    if (bot.role === ROLE.SPY && !actions.spyTarget) {
+      actions.spyTarget = pickBotNightActionTarget(room, bot, ROLE.SPY);
+    }
+    if (bot.role === ROLE.POLICE && !actions.policeTarget) {
+      actions.policeTarget = pickBotNightActionTarget(room, bot, ROLE.POLICE);
+    }
+    if (bot.role === ROLE.DOCTOR && !actions.doctorTarget) {
+      actions.doctorTarget = pickBotNightActionTarget(room, bot, ROLE.DOCTOR);
+    }
+    if (bot.role === ROLE.REPORTER && !bot.reporterUsed && !actions.reporterTarget && room.game.nightIndex >= 2) {
+      actions.reporterTarget = pickBotNightActionTarget(room, bot, ROLE.REPORTER);
+    }
+    if (bot.role === ROLE.MEDIUM && !actions.mediumTarget) {
+      actions.mediumTarget = pickBotNightActionTarget(room, bot, ROLE.MEDIUM);
+    }
+  }
+  console.log(`[BOT] smart night actions (${bots.length} bots)`);
+  broadcastState(room);
+}
+
+function scheduleBotNightActions(room) {
+  if (!hasBots(room)) return;
+  [2000, 8000, 18000, 24000].forEach((ms) => {
+    scheduleRoomTask(room, () => runBotNightActions(room), ms);
   });
 }
 
@@ -666,6 +930,7 @@ function initGameState(room) {
   room.pendingReporterMotion = null;
   bumpRoomTaskGeneration(room);
   room.botLastWordsSent = false;
+  room.game.botMinds = {};
 }
 
 function resetNightActions(room) {
@@ -842,6 +1107,7 @@ function deliverPoliceResult(room, police, targetId) {
       : `${target.nickname}님은 마피아가 아닙니다.`
   });
   if (room.game && room.game.nightActions) room.game.nightActions.policeResolved = true;
+  if (police.isBot) botLearnRole(room, police.id, targetId, target.role);
 }
 
 function deliverSpyResult(room, spy, targetId) {
@@ -882,6 +1148,7 @@ function deliverSpyResult(room, spy, targetId) {
       : `${target.nickname}의 직업: ${ROLE_LABELS[resultRole]}`
   });
   if (room.game && room.game.nightActions) room.game.nightActions.spyResolved = true;
+  if (spy.isBot) botLearnRole(room, spy.id, targetId, resultRole);
   broadcastState(room);
 }
 
@@ -921,6 +1188,7 @@ function deliverReporterScoop(room, reporter, targetId) {
     message: `${target.nickname} → ${ROLE_LABELS[target.role]} (아침에 전원 공표)`
   });
   broadcastAnimation(room, 'anim-reporter-flash', p => p.id === reporter.id);
+  if (reporter.isBot) botLearnRole(room, reporter.id, targetId, target.role);
 }
 
 function deliverMediumResult(room, medium, targetId) {
@@ -950,6 +1218,7 @@ function deliverMediumResult(room, medium, targetId) {
     message: `${target.nickname} → ${ROLE_LABELS[target.role]}`
   });
   if (room.game && room.game.nightActions) room.game.nightActions.mediumResolved = true;
+  if (medium.isBot) botLearnRole(room, medium.id, targetId, target.role);
 }
 
 function emitMotionToUser(userID, motion) {
@@ -990,40 +1259,9 @@ function runBotActions(room) {
   if (!bots.length) return;
 
   const g = room.game;
-  const actions = g.nightActions;
 
   if (room.phase === PHASE.NIGHT) {
-    const mafiaBots = bots.filter(p => p.role === ROLE.MAFIA);
-    if (mafiaBots.length) {
-      const killTarget = pickRandomTarget(room, mafiaBots[0], { excludeMafia: true });
-      mafiaBots.forEach(m => { actions.mafiaVotes[m.id] = killTarget; });
-    }
-
-    const spyBot = bots.find(p => p.role === ROLE.SPY);
-    if (spyBot && !actions.spyTarget) actions.spyTarget = pickRandomTarget(room, spyBot);
-
-    const policeBot = bots.find(p => p.role === ROLE.POLICE);
-    if (policeBot && !actions.policeTarget) actions.policeTarget = pickRandomTarget(room, policeBot);
-
-    const doctorBot = bots.find(p => p.role === ROLE.DOCTOR);
-    if (doctorBot && !actions.doctorTarget) {
-      actions.doctorTarget = pickRandomTarget(room, doctorBot, { excludeSelf: false });
-    }
-
-    const reporterBot = bots.find(p => p.role === ROLE.REPORTER && !p.reporterUsed);
-    if (reporterBot && !actions.reporterTarget && room.game.nightIndex >= 2) {
-      actions.reporterTarget = pickRandomTarget(room, reporterBot);
-    }
-
-    const mediumBot = bots.find(p => p.role === ROLE.MEDIUM);
-    if (mediumBot && !actions.mediumTarget) {
-      const dead = Object.values(room.players).filter(p => !p.alive);
-      if (dead.length) {
-        actions.mediumTarget = dead[Math.floor(Math.random() * dead.length)].id;
-      }
-    }
-
-    console.log(`[BOT] night actions applied (${bots.length} bots)`);
+    runBotNightActions(room);
   }
 
   if (room.phase === PHASE.DAY_VOTE) {
@@ -1054,7 +1292,11 @@ function runBotActions(room) {
     const candidate = getPlayerById(room, g.executionCandidateId);
     if (candidate && candidate.isBot) {
       room.botLastWordsSent = true;
-      const msg = { from: candidate.nickname, fromId: candidate.id, text: '저는 억울합니다...', time: Date.now() };
+      const lines = isMafiaTeam(candidate.role)
+        ? ['저는 일반 시민입니다… 오해입니다!', '누명이에요! 다른 사람을 봐주세요.', '제가 마피아일 리가 없잖아요!']
+        : ['저는 억울합니다…', '잘못된 지목입니다!', '다시 생각해보세요, 저는 시민이에요.'];
+      const text = lines[Math.floor(Math.random() * lines.length)];
+      const msg = { from: candidate.nickname, fromId: candidate.id, text, time: Date.now() };
       pushChat(room, 'lastWords', msg);
       broadcastToRoom(room, 'chatMessage', { channel: 'lastWords', ...msg });
     }
@@ -1182,6 +1424,7 @@ function startNight(room) {
 
   setPhase(room, PHASE.NIGHT, TIMERS[PHASE.NIGHT]);
   broadcastAnimation(room, 'anim-night-fall');
+  scheduleBotNightActions(room);
 }
 
 function startDawn(room) {
