@@ -9,3 +9,10 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "20"
+      # Optional: OpenAI-compatible API for smarter bot chat (falls back to rules if unset)
+      # - key: BOT_AI_ENABLED
+      #   value: "true"
+      # - key: OPENAI_API_KEY
+      #   sync: false
+      # - key: BOT_AI_MODEL
+      #   value: "gpt-4o-mini"

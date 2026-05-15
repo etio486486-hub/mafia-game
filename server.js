@@ -5,6 +5,7 @@ const { randomUUID } = require('crypto');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const botBrain = require('./lib/bot-brain');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -162,7 +163,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 app.set('trust proxy', 1);
 
 app.get('/health', (req, res) => {
-  res.json({ ok: true, service: 'mafia-game' });
+  res.json({ ok: true, service: 'mafia-game', botAi: botBrain.getStatus() });
 });
 
 app.get('/api/info', (req, res) => {
@@ -280,7 +281,8 @@ function buildServerInfo(req) {
     publicUrl,
     playUrl: publicUrl || lanUrl,
     legacyLanUrl: lanUrl,
-    accessMode
+    accessMode,
+    botAi: botBrain.getStatus()
   };
 }
 
@@ -393,34 +395,6 @@ const CHAT_DEFEND_PATTERNS = [
 
 const CHAT_TRUST_PATTERNS = [
   /믿어/, /신뢰/, /시민인 것 같/, /마피아 아닌/, /아닌 것 같/, /확신/, /보호/
-];
-
-const BOT_ACCUSE_LINES = [
-  (name) => `${name}님이 좀 수상한데요.`,
-  (name) => `${name} 말이 앞뒤가 안 맞는 것 같아요.`,
-  (name) => `저는 ${name}님을 의심합니다.`,
-  (name) => `${name} 쪽이 마피아 같아요.`,
-  (name) => `아까 ${name}님 말 들어보니 이상했어요.`,
-  (name) => `낮 동안 ${name}님 태도가 수상했습니다.`,
-  (name) => `${name}님이 너무 조용한 것도 이상해요.`
-];
-
-const BOT_AGREE_LINES = [
-  (name) => `저도 ${name}님이 의심스럽습니다.`,
-  (name) => `맞아요, ${name} 쪽을 지켜봐야 할 것 같아요.`,
-  (name) => `${name}에게 투표하는 게 맞는 것 같아요.`
-];
-
-const BOT_DEFEND_LINES = [
-  () => '저는 시민입니다. 잘못 지목하지 마세요.',
-  () => '억울합니다. 저는 마피아가 아니에요.',
-  () => '아까 제 말은 오해된 것 같아요.'
-];
-
-const BOT_ANALYZE_LINES = [
-  (name) => `${name}님이 어제 밤 이후 태도가 바뀐 것 같아요.`,
-  () => '밤에 죽은 사람 기준으로 다시 추리해봅시다.',
-  () => '지금까지 채팅 보면 한 명이 유독 수상합니다.'
 ];
 
 function ensureBotMinds(room) {
@@ -612,6 +586,18 @@ function pickBotDayVoteTarget(room, bot) {
   return pickRandomTarget(room, bot);
 }
 
+botBrain.configure({
+  ROLE_LABELS,
+  isMafiaTeam,
+  isMafiaRole,
+  getPlayerById,
+  getAlivePlayers,
+  getChatMessages,
+  buildSuspicionScores,
+  pickBotDayVoteTarget,
+  getBotMind
+});
+
 function pickBotKillTarget(room, mafiaBot) {
   const scores = buildSuspicionScores(room, mafiaBot);
   for (const p of getAlivePlayers(room)) {
@@ -690,49 +676,27 @@ function scheduleBotDayVotes(room) {
   });
 }
 
-function pickBotChatLine(room, bot) {
-  const scores = buildSuspicionScores(room, bot);
-  const selfSuspicion = scores[bot.id] || 0;
-  if (selfSuspicion >= 5 && Math.random() < 0.55) {
-    const lineFn = BOT_DEFEND_LINES[Math.floor(Math.random() * BOT_DEFEND_LINES.length)];
-    return lineFn();
-  }
-
-  const targetId = pickBotDayVoteTarget(room, bot);
-  const target = getPlayerById(room, targetId);
-  if (!target || target.id === bot.id) {
-    const lineFn = BOT_ANALYZE_LINES[Math.floor(Math.random() * BOT_ANALYZE_LINES.length)];
-    return typeof lineFn === 'function' ? lineFn(target ? target.nickname : '') : lineFn();
-  }
-
-  const dayChat = getChatMessages(room, 'day');
-  const othersAccused = dayChat.some((msg) => {
-    if (msg.fromId === bot.id || !msg.text) return false;
-    return msg.text.includes(target.nickname) && CHAT_ACCUSE_PATTERNS.some(p => p.test(msg.text));
-  });
-
-  if (othersAccused && Math.random() < 0.5) {
-    const lineFn = BOT_AGREE_LINES[Math.floor(Math.random() * BOT_AGREE_LINES.length)];
-    return lineFn(target.nickname);
-  }
-
-  const lineFn = BOT_ACCUSE_LINES[Math.floor(Math.random() * BOT_ACCUSE_LINES.length)];
-  return lineFn(target.nickname);
-}
-
-function runBotDayChat(room) {
+async function runBotDayChat(room) {
   if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
+  if (room.botChatInFlight) return;
   const bots = getBots(room).filter(p => p.alive);
   if (!bots.length || Math.random() > 0.55) return;
 
   const bot = bots[Math.floor(Math.random() * bots.length)];
-  const text = pickBotChatLine(room, bot);
-  if (!text) return;
+  room.botChatInFlight = true;
+  try {
+    const text = await botBrain.generateBotChat(room, bot);
+    if (!text || room.phase !== PHASE.DAY_CHAT) return;
 
-  const msg = { from: bot.nickname, fromId: bot.id, text, time: Date.now() };
-  pushChat(room, 'day', msg);
-  broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
-  console.log(`[BOT] ${bot.nickname} day-chat: ${text.slice(0, 40)}`);
+    const msg = { from: bot.nickname, fromId: bot.id, text, time: Date.now() };
+    pushChat(room, 'day', msg);
+    broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
+    console.log(`[BOT] ${bot.nickname} day-chat: ${text.slice(0, 40)}`);
+  } catch (err) {
+    console.warn('[BOT] day-chat error', err.message);
+  } finally {
+    room.botChatInFlight = false;
+  }
 }
 
 function scheduleBotDayChat(room) {
@@ -2509,4 +2473,6 @@ httpServer.listen(PORT, HOST, () => {
   const motionReady = MOTION_ASSET_NAMES.filter((n) => resolveMotionAsset(n)).length;
   console.log(`  Role portraits: ${roleReady}/${ROLE_ASSET_NAMES.length} (copied ${assets.rolesCopied})`);
   console.log(`  Motion art: ${motionReady}/${MOTION_ASSET_NAMES.length} (copied ${assets.motionsCopied})`);
+  const botAi = botBrain.getStatus();
+  console.log(`  Bot AI: ${botAi.mode}${botAi.llmEnabled ? ` (${botAi.model})` : ''}`);
 });
