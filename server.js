@@ -184,10 +184,10 @@ const MIN_PHASE_REMAINING_MS = 5000;
 
 /** Bot day-chat rate limits (prevents socket flood / disconnects) */
 const BOT_CHAT = {
-  MIN_GAP_MS: 8000,
-  MAX_PER_DAY_PHASE: 10,
-  HUMAN_REPLY_WAIT_MS: 4000,
-  SCHEDULED_SLOTS_MS: [10000, 45000, 85000]
+  MIN_GAP_MS: 10000,
+  MAX_PER_DAY_PHASE: 8,
+  HUMAN_REPLY_WAIT_MS: 6000,
+  SCHEDULED_SLOTS_MS: [12000, 55000, 95000]
 };
 
 const PHASE = {
@@ -617,6 +617,32 @@ function buildSuspicionScores(room, voter) {
     }
   }
 
+  if (voter.isBot) {
+    const botOthers = aliveOthers.filter(p => p.isBot);
+    const humanOthers = aliveOthers.filter(p => !p.isBot);
+
+    for (const p of humanOthers) {
+      scores[p.id] = Math.max(1, (scores[p.id] || 0) - 3);
+    }
+    for (const p of botOthers) {
+      scores[p.id] = (scores[p.id] || 0) + 2 + Math.floor(Math.random() * 4);
+    }
+
+    const pileOn = {};
+    for (const msg of dayChat.slice(-12)) {
+      if (msg.system || !msg.text || !msg.fromId) continue;
+      const speaker = getPlayerById(room, msg.fromId);
+      if (!speaker || !speaker.isBot) continue;
+      if (!CHAT_ACCUSE_PATTERNS.some((re) => re.test(msg.text))) continue;
+      for (const id of findPlayersMentionedInText(room, msg.text)) {
+        if (id !== voter.id) pileOn[id] = (pileOn[id] || 0) + 1;
+      }
+    }
+    for (const [id, n] of Object.entries(pileOn)) {
+      if (n >= 2) scores[id] = Math.max(0, (scores[id] || 0) - 6);
+    }
+  }
+
   return scores;
 }
 
@@ -648,10 +674,60 @@ function pickTopSuspect(room, bot, { excludeMafiaTeam = false } = {}) {
 }
 
 function pickBotDayVoteTarget(room, bot) {
+  const chatPick = pickBotChatAccuseTarget(room, bot);
+  if (chatPick) return chatPick;
   const fromChat = pickTopSuspect(room, bot, { excludeMafiaTeam: isMafiaTeam(bot.role) });
   if (fromChat) return fromChat;
   if (isMafiaTeam(bot.role)) return pickRandomTarget(room, bot, { excludeMafiaTeam: true });
   return pickRandomTarget(room, bot);
+}
+
+/** Day-chat target: spread suspicion across bots, not only the human */
+function pickBotChatAccuseTarget(room, bot) {
+  const scores = buildSuspicionScores(room, bot);
+  const excludeMafia = isMafiaTeam(bot.role);
+  const sorted = Object.entries(scores)
+    .filter(([id]) => id !== bot.id)
+    .sort((a, b) => b[1] - a[1]);
+
+  const pickId = (id) => {
+    const p = getPlayerById(room, id);
+    if (!p || !p.alive) return false;
+    if (excludeMafia && isMafiaTeam(p.role)) return false;
+    return true;
+  };
+
+  const otherBots = sorted.filter(([id]) => {
+    const p = getPlayerById(room, id);
+    return p && p.isBot && pickId(id);
+  });
+  const others = sorted.filter(([id]) => pickId(id));
+
+  if (otherBots.length && Math.random() < 0.68) {
+    const roll = Math.random();
+    if (roll < 0.5 || otherBots.length === 1) return otherBots[0][0];
+    return otherBots[Math.min(1, otherBots.length - 1)][0];
+  }
+
+  if (others.length >= 2) {
+    const top = others[0];
+    const second = others[1];
+    const topP = getPlayerById(room, top[0]);
+    if (topP && !topP.isBot && second[1] >= top[1] * 0.45 && Math.random() < 0.75) {
+      const secondP = getPlayerById(room, second[0]);
+      if (secondP && secondP.isBot) return second[0];
+    }
+  }
+
+  for (const [id] of others) {
+    if (pickId(id)) return id;
+  }
+
+  const alive = getAlivePlayers(room).filter((p) => p.id !== bot.id);
+  const botAlive = alive.filter((p) => p.isBot && (!excludeMafia || !isMafiaTeam(p.role)));
+  if (botAlive.length) return botAlive[Math.floor(Math.random() * botAlive.length)].id;
+  if (alive.length) return alive[Math.floor(Math.random() * alive.length)].id;
+  return null;
 }
 
 botBrain.configure({
@@ -662,6 +738,7 @@ botBrain.configure({
   getAlivePlayers,
   getChatMessages,
   buildSuspicionScores,
+  pickBotChatAccuseTarget,
   pickBotDayVoteTarget,
   getBotMind
 });
