@@ -1885,4 +1885,62 @@ document.querySelectorAll('.chat-tab').forEach(tab => {
   });
 });
 
+/* ─── Mobile viewport & keyboard ─────────────────────────────────────────── */
+
+function scrollChatToBottom() {
+  const list = $('#chat-messages');
+  if (list) list.scrollTop = list.scrollHeight;
+}
+
+function scrollLobbyChatToBottom() {
+  const list = $('#lobby-chat-messages');
+  if (list) list.scrollTop = list.scrollHeight;
+}
+
+function updateMobileViewport() {
+  const root = document.documentElement;
+  const vv = window.visualViewport;
+  const h = vv ? vv.height : window.innerHeight;
+  root.style.setProperty('--app-vh', `${Math.round(h)}px`);
+  if (vv) {
+    const kb = Math.max(0, window.innerHeight - vv.height - (vv.offsetTop || 0));
+    root.style.setProperty('--keyboard-offset', `${Math.round(kb)}px`);
+  } else {
+    root.style.setProperty('--keyboard-offset', '0px');
+  }
+}
+
+function setupMobileOptimizations() {
+  const ua = navigator.userAgent || '';
+  if (/iPhone|iPad|iPod|Android|Mobile/i.test(ua)) {
+    document.documentElement.classList.add('is-mobile');
+  }
+
+  updateMobileViewport();
+  window.addEventListener('resize', updateMobileViewport, { passive: true });
+  window.addEventListener('orientationchange', () => {
+    setTimeout(updateMobileViewport, 80);
+    setTimeout(updateMobileViewport, 320);
+  });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', updateMobileViewport, { passive: true });
+    window.visualViewport.addEventListener('scroll', updateMobileViewport, { passive: true });
+  }
+
+  const chatInput = $('#chat-input');
+  if (chatInput) {
+    chatInput.addEventListener('focus', () => {
+      setTimeout(scrollChatToBottom, 280);
+    });
+  }
+
+  const lobbyInput = $('#lobby-chat-input');
+  if (lobbyInput) {
+    lobbyInput.addEventListener('focus', () => {
+      setTimeout(scrollLobbyChatToBottom, 280);
+    });
+  }
+}
+
+setupMobileOptimizations();
 updateLobbyConnectionUi();
