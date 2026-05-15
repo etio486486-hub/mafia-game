@@ -1180,9 +1180,13 @@ function renderActionPanel() {
   if (!state.myPlayerId) return;
   const me = state.players.find(p => p.id === state.myPlayerId);
   if (!me || !me.alive) {
-    hint.textContent = state.canDeadChatSend
-      ? '낮 채팅은 볼 수 있습니다. 사망자 채팅에서 다른 사망자와 대화하세요.'
-      : '사망하여 능력/투표를 사용할 수 없습니다.';
+    if (state.myRole === ROLE.MEDIUM && state.canDeadChatView) {
+      hint.textContent = '영매: 사망자 탭에서 봇·플레이어 사망 채팅을 확인하세요. 낮에는 낮 탭에도 표시됩니다.';
+    } else if (state.canDeadChatSend) {
+      hint.textContent = '사망자 채팅에서 힌트를 남길 수 있습니다. 영매가 볼 수 있습니다.';
+    } else {
+      hint.textContent = '사망하여 능력/투표를 사용할 수 없습니다.';
+    }
     return;
   }
 
@@ -1194,7 +1198,12 @@ function renderActionPanel() {
     if (state.myRole === ROLE.SPY) addConfirmBtn(btns, '직업 조사', () => emitNightAction('spyInvestigate'));
     if (state.myRole === ROLE.POLICE) addConfirmBtn(btns, '마피아 조사', () => emitNightAction('policeInvestigate'));
     if (state.myRole === ROLE.DOCTOR) addConfirmBtn(btns, '치료', () => emitNightAction('doctorHeal'));
-    if (state.myRole === ROLE.MEDIUM) addConfirmBtn(btns, '성불', () => emitNightAction('mediumPurify'));
+    if (state.myRole === ROLE.MEDIUM) {
+      addConfirmBtn(btns, '성불', () => emitNightAction('mediumPurify'));
+      if (state.canDeadChatView) {
+        hint.textContent = '사망자를 선택해 성불하세요. 사망자 탭에서 봇·사람 대화도 확인할 수 있습니다.';
+      }
+    }
     if (state.myRole === ROLE.REPORTER && !state.reporterUsed && (state.nightIndex || 0) >= 2) {
       addConfirmBtn(btns, '취재', () => emitNightAction('reporterScoop'));
     }
@@ -1338,7 +1347,9 @@ function updateChatTabs() {
   const tabLast = $('#tab-lastwords');
 
   tabMafia.hidden = !state.canMafiaChat;
-  tabDead.hidden = !state.canDeadChatView || state.phase === 'day_chat';
+  const me = state.players.find(p => p.id === state.myPlayerId);
+  const mediumAlive = me && me.alive && state.myRole === ROLE.MEDIUM;
+  tabDead.hidden = !state.canDeadChatView || (state.phase === 'day_chat' && !mediumAlive && me && me.alive);
   tabLast.hidden = state.phase !== 'last_words';
 
   if (state.phase === 'night') {
@@ -1362,7 +1373,6 @@ function updateChatTabs() {
   });
 
   const readOnlyDead = activeChatChannel === 'dead' && state.canDeadChatView && !state.canDeadChatSend;
-  const me = state.players.find(p => p.id === state.myPlayerId);
   const canType = (
     (activeChatChannel === 'day' && state.phase === 'day_chat' && me && (me.alive || state.canDeadChatSend)) ||
     (activeChatChannel === 'mafia' && state.phase === 'night' && state.canMafiaChat) ||
@@ -1721,12 +1731,32 @@ socket.on('dayVoteResults', (data) => {
   showVoteResultsOverlay(data);
 });
 
+function ingestDeadChatMessage(data) {
+  if (!chatStore.dead) chatStore.dead = [];
+  chatStore.dead.push(data);
+  const me = state && state.players.find(p => p.id === state.myPlayerId);
+  const mediumAlive = me && me.alive && state.myRole === ROLE.MEDIUM;
+  const mergeToDay = data.channel === 'day' || data.isDead
+    || (state && state.phase === 'day_chat')
+    || mediumAlive;
+  if (mergeToDay) {
+    if (!chatStore.day) chatStore.day = [];
+    chatStore.day.push({ ...data, isDead: true });
+    if (activeChatChannel === 'day') queueChatRender('day');
+  }
+  if (activeChatChannel === 'dead') queueChatRender('dead');
+}
+
 socket.on('chatMessage', (data) => {
   const ch = data.channel === 'lastWords' ? 'lastWords' : data.channel;
   if (ch === 'day') {
     if (!chatStore.day) chatStore.day = [];
     chatStore.day.push(data);
     if (activeChatChannel === 'day') queueChatRender('day');
+    return;
+  }
+  if (ch === 'dead') {
+    ingestDeadChatMessage({ ...data, isDead: true });
     return;
   }
   if (!chatStore[ch]) chatStore[ch] = [];

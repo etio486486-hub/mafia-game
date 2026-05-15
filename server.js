@@ -197,6 +197,12 @@ const BOT_CHAT = {
   SCHEDULED_SLOTS_MS: [18000, 75000]
 };
 
+const BOT_DEAD_CHAT = {
+  MAX_PER_DEATH: 2,
+  FIRST_DELAY_MS: 4000,
+  GAP_MS: 9000
+};
+
 const ROOM_EMIT_BUDGET = { maxPerSecond: 18, maxChatPerSecond: 6 };
 const STATE_SYNC_CHAT_LIMIT = 80;
 
@@ -257,7 +263,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14e',
+    stability: '2026-05-14f',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -376,7 +382,81 @@ function clearBotChatTimers(room) {
     clearTimeout(room._policeReportTimer);
     room._policeReportTimer = null;
   }
+  if (room._botDeadChatTimers) {
+    for (const t of room._botDeadChatTimers) clearTimeout(t);
+    room._botDeadChatTimers = [];
+  }
   room.botChatInFlight = false;
+}
+
+function canReceiveDeadChat(player) {
+  return !!player && (!player.alive || player.role === ROLE.MEDIUM);
+}
+
+function broadcastDeadChatMessage(room, deadMsg) {
+  if (room.phase === PHASE.DAY_CHAT) {
+    pushChat(room, 'day', deadMsg);
+    broadcastToRoom(room, 'chatMessage', { channel: 'day', ...deadMsg });
+    return;
+  }
+  broadcastToRoom(room, 'chatMessage', { channel: 'dead', ...deadMsg }, canReceiveDeadChat);
+}
+
+function postBotDeadMessage(room, bot, text) {
+  if (!text || !bot || bot.alive) return;
+  if (!canEmitRoomEvent(room, 'chat')) return;
+  const deadMsg = {
+    from: bot.nickname,
+    fromId: bot.id,
+    text: String(text).trim(),
+    time: Date.now(),
+    isDead: true
+  };
+  pushChat(room, 'dead', deadMsg);
+  broadcastDeadChatMessage(room, deadMsg);
+  console.log(`[BOT] dead-chat ${bot.nickname}: ${deadMsg.text.slice(0, 50)}`);
+}
+
+function scheduleBotDeadReply(room, triggerMsg) {
+  if (!hasBots(room) || !triggerMsg.fromId) return;
+  const triggerPlayer = getPlayerById(room, triggerMsg.fromId);
+  if (!triggerPlayer || triggerPlayer.isBot) return;
+  const deadBots = Object.values(room.players).filter((p) => p.isBot && !p.alive && p.id !== triggerMsg.fromId);
+  if (!deadBots.length) return;
+  const replier = deadBots[Math.floor(Math.random() * deadBots.length)];
+  if (replier._deadRepliedAt && Date.now() - replier._deadRepliedAt < 12000) return;
+  scheduleRoomTask(room, () => {
+    if (!replier.alive) {
+      const text = botBrain.generateBotDeadChat(room, replier, { replyTo: triggerMsg });
+      if (text) {
+        replier._deadRepliedAt = Date.now();
+        postBotDeadMessage(room, replier, text);
+      }
+    }
+  }, 5000 + Math.floor(Math.random() * 4000));
+}
+
+function scheduleBotDeadChatOnDeath(room, bot) {
+  if (!bot.isBot || bot.alive) return;
+  if (!room._botDeadChatTimers) room._botDeadChatTimers = [];
+  for (let i = 0; i < BOT_DEAD_CHAT.MAX_PER_DEATH; i++) {
+    const delay = BOT_DEAD_CHAT.FIRST_DELAY_MS + i * BOT_DEAD_CHAT.GAP_MS;
+    const timer = setTimeout(() => {
+      if (room._botDeadChatTimers) {
+        room._botDeadChatTimers = room._botDeadChatTimers.filter((t) => t !== timer);
+      }
+      if (!isActiveGame(room) || bot.alive) return;
+      const text = botBrain.generateBotDeadChat(room, bot, { onDeath: true, pass: i });
+      if (text) postBotDeadMessage(room, bot, text);
+    }, delay);
+    room._botDeadChatTimers.push(timer);
+  }
+}
+
+function markPlayerDead(room, player) {
+  if (!player || !player.alive) return;
+  player.alive = false;
+  if (player.isBot) scheduleBotDeadChatOnDeath(room, player);
 }
 
 function resetBotChatStats(room) {
@@ -664,9 +744,10 @@ function schedulePolicePublicReport(room) {
   }, 2800);
 }
 
-function buildSuspicionScores(room, voter) {
+function buildSuspicionScores(room, voter, opts = {}) {
+  const skipBotHumanBias = !!opts.skipBotHumanBias;
   const now = Date.now();
-  if (room._susCache && room._susCache.voterId === voter.id && now - room._susCache.at < 2500) {
+  if (!skipBotHumanBias && room._susCache && room._susCache.voterId === voter.id && now - room._susCache.at < 2500) {
     return room._susCache.scores;
   }
 
@@ -775,7 +856,7 @@ function buildSuspicionScores(room, voter) {
     }
   }
 
-  if (voter.isBot) {
+  if (voter.isBot && !skipBotHumanBias) {
     const botOthers = aliveOthers.filter(p => p.isBot);
     const humanOthers = aliveOthers.filter(p => !p.isBot);
 
@@ -801,7 +882,9 @@ function buildSuspicionScores(room, voter) {
     }
   }
 
-  room._susCache = { voterId: voter.id, at: Date.now(), scores };
+  if (!skipBotHumanBias) {
+    room._susCache = { voterId: voter.id, at: Date.now(), scores };
+  }
   return scores;
 }
 
@@ -818,8 +901,8 @@ function pickWeightedFromScores(scores, excludeIds = []) {
   return entries[entries.length - 1][0];
 }
 
-function pickTopSuspect(room, bot, { excludeMafiaTeam = false } = {}) {
-  const scores = buildSuspicionScores(room, bot);
+function pickTopSuspect(room, bot, { excludeMafiaTeam = false, skipBotHumanBias = false } = {}) {
+  const scores = buildSuspicionScores(room, bot, { skipBotHumanBias });
   const sorted = Object.entries(scores)
     .filter(([id]) => id !== bot.id)
     .sort((a, b) => b[1] - a[1]);
@@ -934,8 +1017,33 @@ function pickBotHealTarget(room, doctorBot) {
   return pickRandomTarget(room, doctorBot, { excludeSelf: false });
 }
 
+function pickBotPoliceInvestigateTarget(room, police) {
+  const alive = getAlivePlayers(room).filter((p) => p.id !== police.id);
+  if (!alive.length) return null;
+
+  const humans = alive.filter((p) => !p.isBot);
+  const mind = getBotMind(room, police.id);
+  const unknownHumans = humans.filter((p) => !mind.knownRoles[p.id]);
+
+  if (unknownHumans.length && Math.random() < 0.62) {
+    return unknownHumans[Math.floor(Math.random() * unknownHumans.length)].id;
+  }
+  if (humans.length && Math.random() < 0.48) {
+    return humans[Math.floor(Math.random() * humans.length)].id;
+  }
+
+  const scores = buildSuspicionScores(room, police, { skipBotHumanBias: true });
+  const pick = pickWeightedFromScores(scores, [police.id]);
+  if (pick) return pick;
+  return pickRandomTarget(room, police);
+}
+
 function pickBotInvestigateTarget(room, investigator) {
-  return pickTopSuspect(room, investigator) || pickRandomTarget(room, investigator);
+  if (investigator.role === ROLE.POLICE) {
+    return pickBotPoliceInvestigateTarget(room, investigator);
+  }
+  return pickTopSuspect(room, investigator, { skipBotHumanBias: true })
+    || pickRandomTarget(room, investigator);
 }
 
 function pickBotNightActionTarget(room, bot, role) {
@@ -1349,8 +1457,7 @@ function toClientState(room, viewerUserId, opts = {}) {
     dayChat: includeChat && room.phase !== PHASE.LOBBY && room.game
       ? getMergedDayChatLog(room).slice(-STATE_SYNC_CHAT_LIMIT)
       : undefined,
-    deadChat: includeChat && viewer && room.game && (!viewer.alive || viewer.role === ROLE.MEDIUM)
-      && room.phase !== PHASE.DAY_CHAT
+    deadChat: includeChat && viewer && room.game && canReceiveDeadChat(viewer)
       ? room.chatLog.dead.slice(-STATE_SYNC_CHAT_LIMIT)
       : undefined,
     mafiaChat: includeChat && viewer && room.game && viewer.alive
@@ -1957,7 +2064,7 @@ function resolveNight(room) {
           situation: '[상태] 방탄: 마피아의 공격을 버텨낸 경우'
         });
       } else {
-        target.alive = false;
+        markPlayerDead(room, target);
         killedId = killTarget;
         deaths.push(killTarget);
         if (g.nightIndex === 1 && !g.firstNightDeathId) g.firstNightDeathId = killTarget;
@@ -2209,7 +2316,7 @@ function resolveExecutionVote(room) {
   console.log(`[EXECUTION] candidate=${candidate.nickname} yes=${yes} no=${no} (미투표=반대) -> ${executed ? 'EXECUTED' : 'SPARED'}`);
 
   if (executed) {
-    candidate.alive = false;
+    markPlayerDead(room, candidate);
     room.game.pendingAnnouncements = [`${candidate.nickname}님이 처형되었습니다.`];
     emitMotion(room, {
       type: 'vote_execution',
@@ -2647,11 +2754,9 @@ function handleChat(room, socket, channel, text) {
     if (player.alive) return reject(socket, '사망자만 대화할 수 있습니다.');
     const deadMsg = { ...msg, isDead: true };
     pushChat(room, 'dead', deadMsg);
-    if (room.phase === PHASE.DAY_CHAT) {
-      pushChat(room, 'day', deadMsg);
-      broadcastToRoom(room, 'chatMessage', { channel: 'day', ...deadMsg });
-    } else {
-      broadcastToRoom(room, 'chatMessage', { channel: 'dead', ...deadMsg }, p => !p.alive || p.role === ROLE.MEDIUM);
+    broadcastDeadChatMessage(room, deadMsg);
+    if (!player.isBot && hasBots(room)) {
+      scheduleBotDeadReply(room, deadMsg);
     }
   } else if (channel === 'lastWords') {
     if (room.phase !== PHASE.LAST_WORDS) return reject(socket, '최후의 반론 시간이 아닙니다.');
