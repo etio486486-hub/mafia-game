@@ -245,7 +245,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14b',
+    stability: '2026-05-14c',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -359,6 +359,10 @@ function clearBotChatTimers(room) {
   if (room._botHumanReplyTimer) {
     clearTimeout(room._botHumanReplyTimer);
     room._botHumanReplyTimer = null;
+  }
+  if (room._policeReportTimer) {
+    clearTimeout(room._policeReportTimer);
+    room._policeReportTimer = null;
   }
   room.botChatInFlight = false;
 }
@@ -512,14 +516,103 @@ function countChatMessagesByPlayer(room, channel) {
   return counts;
 }
 
-function findPlayersMentionedInText(room, text) {
+function findPlayersMentionedInText(room, text, { aliveOnly = true } = {}) {
   if (!text) return [];
   const mentioned = [];
   const sorted = Object.values(room.players).sort((a, b) => b.nickname.length - a.nickname.length);
   for (const p of sorted) {
+    if (aliveOnly && !p.alive) continue;
     if (p.nickname && text.includes(p.nickname)) mentioned.push(p.id);
   }
   return mentioned;
+}
+
+function isPoliceReportRequest(text) {
+  if (!text) return false;
+  const raw = String(text);
+  const compact = raw.replace(/\s+/g, '');
+  if (/경찰조사|경찰수사|수사결과|조사결과|경찰결과/.test(compact)) return true;
+  if (/경찰/.test(compact) && /(조사|수사|결과|ㄱㅈ|알려|말해|공개|발표)/.test(compact)) return true;
+  if (/경조/.test(compact) && /(조사|결과|알려|ㄱㅈ)/.test(compact)) return true;
+  if (/경찰/.test(raw) && /(누구|마피아)/.test(raw)) return true;
+  return false;
+}
+
+function recordPoliceInvestigation(room, policeId, targetId, isMafia) {
+  if (!room.game) return;
+  const target = getPlayerById(room, targetId);
+  if (!target) return;
+  if (!room.game.policeIntel) room.game.policeIntel = {};
+  if (!room.game.policeIntel[policeId]) room.game.policeIntel[policeId] = [];
+  const list = room.game.policeIntel[policeId];
+  const existing = list.find((e) => e.targetId === targetId);
+  const row = {
+    targetId,
+    targetName: target.nickname,
+    isMafia: !!isMafia,
+    nightIndex: room.game.nightIndex || 0,
+    at: Date.now()
+  };
+  if (existing) {
+    Object.assign(existing, row);
+  } else {
+    list.push(row);
+  }
+}
+
+function buildPolicePublicReport(room) {
+  const police = Object.values(room.players).find((p) => p.role === ROLE.POLICE && p.alive);
+  if (!police) return null;
+
+  const intel = (room.game.policeIntel && room.game.policeIntel[police.id]) || [];
+  if (!intel.length) {
+    return {
+      police,
+      text: '저는 아직 조사한 사람이 없습니다. 밤에 수사할 대상을 지목해 주세요.'
+    };
+  }
+
+  const seen = new Set();
+  const parts = [];
+  for (const row of intel) {
+    if (seen.has(row.targetId)) continue;
+    seen.add(row.targetId);
+    const t = getPlayerById(room, row.targetId);
+    const name = (t && t.nickname) || row.targetName;
+    if (row.isMafia) parts.push(`${name}님은 마피아입니다`);
+    else parts.push(`${name}님은 마피아가 아닙니다`);
+  }
+
+  return {
+    police,
+    text: `수사 결과입니다. ${parts.join('. ')}.`
+  };
+}
+
+function postPolicePublicReport(room) {
+  if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
+  const report = buildPolicePublicReport(room);
+  if (!report) return;
+
+  const msg = {
+    from: report.police.nickname,
+    fromId: report.police.id,
+    text: report.text,
+    time: Date.now()
+  };
+  pushChat(room, 'day', msg);
+  broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
+  console.log(`[POLICE] public report by ${report.police.nickname}`);
+}
+
+function schedulePolicePublicReport(room) {
+  if (!room.game || room.phase !== PHASE.DAY_CHAT) return;
+  if (room._policeReportTimer) clearTimeout(room._policeReportTimer);
+  room._policeReportTimer = setTimeout(() => {
+    room._policeReportTimer = null;
+    if (room.phase !== PHASE.DAY_CHAT) return;
+    postPolicePublicReport(room);
+  }, 2800);
 }
 
 function buildSuspicionScores(room, voter) {
@@ -761,7 +854,9 @@ botBrain.configure({
   buildSuspicionScores,
   pickBotChatAccuseTarget,
   pickBotDayVoteTarget,
-  getBotMind
+  getBotMind,
+  isPoliceReportRequest,
+  buildPolicePublicReport
 });
 
 function pickBotKillTarget(room, mafiaBot) {
@@ -1066,7 +1161,8 @@ function initGameState(room) {
     firstNightDeathId: null,
     graverobberInherited: false,
     dawnAnnouncements: [],
-    pendingAnnouncements: []
+    pendingAnnouncements: [],
+    policeIntel: {}
   };
   room.chatLog = { lobby: [], day: [], mafia: [], dead: [], lastWords: [] };
   room.pendingReporterReveal = null;
@@ -1270,6 +1366,7 @@ function deliverPoliceResult(room, police, targetId) {
       : `${target.nickname}님은 마피아가 아닙니다.`
   });
   if (room.game && room.game.nightActions) room.game.nightActions.policeResolved = true;
+  recordPoliceInvestigation(room, police.id, targetId, isMafia);
   if (police.isBot) botLearnRole(room, police.id, targetId, target.role);
 }
 
@@ -2474,7 +2571,11 @@ function handleChat(room, socket, channel, text) {
     }
     pushChat(room, 'day', msg);
     broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
-    if (hasBots(room) && !player.isBot) scheduleBotReplyToHuman(room);
+    if (isPoliceReportRequest(msg.text)) {
+      schedulePolicePublicReport(room);
+    } else if (hasBots(room) && !player.isBot) {
+      scheduleBotReplyToHuman(room);
+    }
   } else if (channel === 'mafia') {
     if (room.phase !== PHASE.NIGHT || !player.alive) return reject(socket, '마피아 채팅 불가');
     if (player.role !== ROLE.MAFIA && !player.joinedMafiaChat) return reject(socket, '권한 없음');
