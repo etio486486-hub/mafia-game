@@ -6,6 +6,8 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const botBrain = require('./lib/bot-brain');
+const voteFacts = require('./lib/bot-vote-facts');
+const voteIntel = require('./lib/bot-vote-intel');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -263,7 +265,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14g',
+    stability: '2026-05-14h',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -731,6 +733,7 @@ function postPolicePublicReport(room) {
   };
   pushChat(room, 'day', msg);
   broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
+  voteIntel.publishPoliceIntelToPublic(room);
   console.log(`[POLICE] public report by ${report.police.nickname}`);
 }
 
@@ -916,13 +919,21 @@ function pickTopSuspect(room, bot, { excludeMafiaTeam = false, skipBotHumanBias 
 }
 
 function pickBotDayVoteTarget(room, bot) {
-  const chatPick = pickBotChatAccuseTarget(room, bot);
-  if (chatPick) return chatPick;
-  const fromChat = pickTopSuspect(room, bot, { excludeMafiaTeam: isMafiaTeam(bot.role) });
-  if (fromChat) return fromChat;
-  if (isMafiaTeam(bot.role)) return pickRandomTarget(room, bot, { excludeMafiaTeam: true });
-  return pickRandomTarget(room, bot);
+  const factTarget = voteFacts.pickFactBasedDayVote(room, bot, voteFactHelpers);
+  if (factTarget) return factTarget;
+  return bot.id;
 }
+
+function pickBotExecutionVoteFromFacts(room, bot, candidate) {
+  return voteFacts.pickFactBasedExecutionVote(room, bot, candidate, voteFactHelpers);
+}
+
+const voteFactHelpers = {
+  isMafiaTeam,
+  isMafiaRole,
+  getPlayerById,
+  getBotMind
+};
 
 /** Day-chat target: spread suspicion across bots, not only the human */
 function pickBotChatAccuseTarget(room, bot) {
@@ -982,6 +993,7 @@ botBrain.configure({
   buildSuspicionScores,
   pickBotChatAccuseTarget,
   pickBotDayVoteTarget,
+  pickFactBasedExecutionVote: pickBotExecutionVoteFromFacts,
   getBotMind,
   isPoliceReportRequest,
   buildPolicePublicReport,
@@ -1493,7 +1505,8 @@ function initGameState(room) {
     graverobberInherited: false,
     dawnAnnouncements: [],
     pendingAnnouncements: [],
-    policeIntel: {}
+    policeIntel: {},
+    publicVoteIntel: []
   };
   room.chatLog = { lobby: [], day: [], mafia: [], dead: [], lastWords: [] };
   room.pendingReporterReveal = null;
@@ -2065,6 +2078,7 @@ function startDayChat(room) {
   g.executionVotes = {};
   g.executionCandidateId = null;
   g.lastNightReport = buildLastNightReport(room);
+  voteIntel.ingestFromNightReport(room, g.lastNightReport, botLearnRole);
   g.dawnAnnouncements = [];
   g._nightSummary = null;
   resetBotChatStats(room);
@@ -2073,6 +2087,15 @@ function startDayChat(room) {
   setPhase(room, PHASE.DAY_CHAT, debateMs);
   scheduleBotDawnSkillReactions(room);
   scheduleBotDayChat(room);
+  ensureBotPoliceIntelPublished(room);
+}
+
+function ensureBotPoliceIntelPublished(room) {
+  const police = Object.values(room.players).find(
+    (p) => p.role === ROLE.POLICE && p.alive && p.isBot
+  );
+  if (!police || !room.game?.policeIntel?.[police.id]?.length) return;
+  schedulePolicePublicReport(room);
 }
 
 function startDayVote(room) {
