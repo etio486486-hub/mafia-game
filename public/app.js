@@ -117,12 +117,12 @@ const FX_MAP = {
   'anim-dawn-rise': { cls: 'fx-phase-day', text: '아침이 밝았습니다' }
 };
 
-let userID = localStorage.getItem('userID');
+let userID = sessionStorage.getItem('mafia_userID');
 if (!userID) {
   userID = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
     ? crypto.randomUUID()
     : `u-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 11)}`;
-  localStorage.setItem('userID', userID);
+  sessionStorage.setItem('mafia_userID', userID);
 }
 
 let state = null;
@@ -270,12 +270,44 @@ let phaseEndEstimate = 0;
 const socket = io({
   reconnection: true,
   reconnectionDelay: 1000,
-  reconnectionDelayMax: 5000,
+  reconnectionDelayMax: 8000,
   reconnectionAttempts: Infinity,
+  randomizationFactor: 0.35,
   transports: ['polling', 'websocket'],
-  timeout: 25000
+  timeout: 30000
 });
 let socketConnected = false;
+let reconnectPaused = false;
+let pendingRoomRejoin = null;
+let keepAliveTimer = null;
+let disconnectBannerTimer = null;
+
+function startKeepAlive() {
+  if (keepAliveTimer) return;
+  keepAliveTimer = setInterval(() => {
+    fetch('/health', { cache: 'no-store', credentials: 'same-origin' }).catch(() => {});
+  }, 4 * 60 * 1000);
+}
+
+function stopKeepAlive() {
+  if (keepAliveTimer) {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  }
+}
+
+function requestSessionSync() {
+  if (reconnectPaused || !socketConnected) return;
+  const nick = getNickname() || localStorage.getItem('mafia_nickname') || '플레이어';
+  const savedRoom = localStorage.getItem('mafia_roomCode');
+  if (savedRoom) {
+    pendingRoomRejoin = savedRoom;
+    socket.emit('resumeSession', { userID, nickname: nick });
+  } else {
+    pendingRoomRejoin = null;
+    socket.emit('join', { userID, nickname: nick, roomCode: null });
+  }
+}
 
 /* ─── DOM ─────────────────────────────────────────────────────────────────── */
 
@@ -1374,39 +1406,37 @@ function appendPrivateInfo(data) {
 socket.on('connect', () => {
   socketConnected = true;
   updateLobbyConnectionUi();
+  if (disconnectBannerTimer) {
+    clearTimeout(disconnectBannerTimer);
+    disconnectBannerTimer = null;
+  }
   $('#reconnect-banner').hidden = true;
   const nick = getNickname() || localStorage.getItem('mafia_nickname') || '';
   if (nick) $('#nickname').value = nick;
-  const savedRoom = localStorage.getItem('mafia_roomCode');
-  if (savedRoom) {
-    socket.emit('join', { userID, nickname: nick || '플레이어', roomCode: savedRoom });
-  } else if (nick) {
-    socket.emit('join', { userID, nickname: nick, roomCode: null });
-  }
+  requestSessionSync();
 });
 
-socket.io.on('reconnect', () => {
-  const savedRoom = localStorage.getItem('mafia_roomCode');
-  const nick = getNickname() || localStorage.getItem('mafia_nickname') || '플레이어';
-  if (savedRoom) {
-    socket.emit('join', { userID, nickname: nick, roomCode: savedRoom });
-  }
-});
-
-socket.on('disconnect', () => {
+socket.on('disconnect', (reason) => {
   socketConnected = false;
   updateLobbyConnectionUi();
-  $('#reconnect-banner').hidden = false;
+  if (reconnectPaused || reason === 'io client disconnect') return;
+  if (disconnectBannerTimer) clearTimeout(disconnectBannerTimer);
+  disconnectBannerTimer = setTimeout(() => {
+    if (!socket.connected) $('#reconnect-banner').hidden = false;
+  }, 2000);
 });
 
 socket.on('connect_error', () => {
   socketConnected = false;
   updateLobbyConnectionUi();
-  showToast('서버에 연결할 수 없습니다. 잠시 후 다시 시도하세요.');
 });
 
 socket.on('sessionTaken', (data) => {
-  showToast(data.message);
+  reconnectPaused = true;
+  stopKeepAlive();
+  pendingRoomRejoin = null;
+  socket.disconnect();
+  showToast(data.message || '다른 탭에서 접속되어 연결이 종료되었습니다.');
   localStorage.removeItem('mafia_roomCode');
   state = { phase: 'none', serverInfo: state && state.serverInfo ? state.serverInfo : null };
   resetLobbyClientState();
@@ -1420,10 +1450,26 @@ socket.on('joinResult', (data) => {
 });
 
 socket.on('stateSync', (data) => {
+  if (data.phase === 'none' && pendingRoomRejoin) {
+    const code = pendingRoomRejoin;
+    pendingRoomRejoin = null;
+    const nick = getNickname() || localStorage.getItem('mafia_nickname') || '플레이어';
+    socket.emit('join', { userID, nickname: nick, roomCode: code });
+    return;
+  }
+  pendingRoomRejoin = null;
+
   state = data;
   if (data.roomCode) localStorage.setItem('mafia_roomCode', data.roomCode);
   else localStorage.removeItem('mafia_roomCode');
-  if (data.phase === 'none') resetLobbyClientState();
+  if (data.phase === 'none') {
+    stopKeepAlive();
+    resetLobbyClientState();
+  } else if (data.phase && data.phase !== 'lobby') {
+    startKeepAlive();
+  } else {
+    stopKeepAlive();
+  }
   if (data.phase && data.phase !== 'lobby' && data.phase !== 'none') {
     if (!notesSessionKey) notesSessionKey = localStorage.getItem(`mafia_notes_session_${data.roomCode}`) || String(Date.now());
     localStorage.setItem(`mafia_notes_session_${data.roomCode}`, notesSessionKey);

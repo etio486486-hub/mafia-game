@@ -10,11 +10,22 @@ const botBrain = require('./lib/bot-brain');
 const app = express();
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
-  pingInterval: 25000,
-  pingTimeout: 60000,
+  pingInterval: 20000,
+  pingTimeout: 90000,
+  connectTimeout: 45000,
   cors: { origin: '*' },
-  transports: ['polling', 'websocket']
+  transports: ['polling', 'websocket'],
+  allowEIO3: true,
+  perMessageDeflate: false,
+  maxHttpBufferSize: 1e6,
+  connectionStateRecovery: {
+    maxDisconnectionDuration: 3 * 60 * 1000,
+    skipMiddlewares: true
+  }
 });
+
+httpServer.keepAliveTimeout = 120000;
+httpServer.headersTimeout = 125000;
 
 function resolveMotionAsset(filename) {
   const candidates = [
@@ -162,10 +173,6 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 app.set('trust proxy', 1);
 
-app.get('/health', (req, res) => {
-  res.json({ ok: true, service: 'mafia-game', botAi: botBrain.getStatus() });
-});
-
 app.get('/api/info', (req, res) => {
   res.json(buildServerInfo(req));
 });
@@ -226,6 +233,18 @@ const ROLE_LABELS = {
 
 const rooms = new Map();
 const sessions = new Map();
+
+app.get('/health', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    service: 'mafia-game',
+    botAi: botBrain.getStatus(),
+    rooms: rooms.size,
+    sessions: sessions.size,
+    uptime: Math.floor(process.uptime())
+  });
+});
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -329,6 +348,10 @@ function isActiveGame(room) {
 
 function bumpRoomTaskGeneration(room) {
   if (!room) return;
+  if (room._broadcastStateTimer) {
+    clearTimeout(room._broadcastStateTimer);
+    room._broadcastStateTimer = null;
+  }
   room.taskGeneration = (room.taskGeneration || 0) + 1;
   room.botActionGeneration = (room.botActionGeneration || 0) + 1;
   room.resolvingDayVote = false;
@@ -1036,7 +1059,8 @@ function toClientState(room, viewerUserId) {
   };
 }
 
-function broadcastState(room) {
+function broadcastStateNow(room) {
+  if (!room) return;
   ensurePhaseTimer(room);
   for (const p of Object.values(room.players)) {
     if (!p.connected) continue;
@@ -1044,6 +1068,15 @@ function broadcastState(room) {
     if (!sess || !sess.socketId) continue;
     io.to(sess.socketId).emit('stateSync', toClientState(room, p.userID));
   }
+}
+
+function broadcastState(room) {
+  if (!room) return;
+  if (room._broadcastStateTimer) return;
+  room._broadcastStateTimer = setTimeout(() => {
+    room._broadcastStateTimer = null;
+    broadcastStateNow(room);
+  }, 100);
 }
 
 function broadcastToRoom(room, event, data, filterFn) {
@@ -1909,12 +1942,28 @@ function resolveExecutionVote(room) {
 
 // ─── session manager ──────────────────────────────────────────────────────────
 
+const RECONNECT_GRACE_MS = 12000;
+
 function attachSession(socket, userID, nickname) {
   const existing = sessions.get(userID);
+  const now = Date.now();
+
   if (existing && existing.socketId && existing.socketId !== socket.id) {
-    io.to(existing.socketId).emit('sessionTaken', { message: '다른 기기에서 접속하여 연결이 종료됩니다.' });
     const oldSocket = io.sockets.sockets.get(existing.socketId);
-    if (oldSocket && oldSocket.connected) oldSocket.disconnect(true);
+    const isReconnectFlap = existing.lastDisconnectAt
+      && (now - existing.lastDisconnectAt) < RECONNECT_GRACE_MS;
+
+    if (oldSocket && oldSocket.connected) {
+      if (isReconnectFlap) {
+        console.log(`[SESSION] replace socket userID=${userID} (reconnect flap)`);
+        oldSocket.disconnect(true);
+      } else {
+        io.to(existing.socketId).emit('sessionTaken', {
+          message: '다른 탭/기기에서 접속하여 연결이 종료됩니다.'
+        });
+        oldSocket.disconnect(true);
+      }
+    }
   }
 
   sessions.set(userID, {
@@ -1922,10 +1971,24 @@ function attachSession(socket, userID, nickname) {
     nickname,
     socketId: socket.id,
     roomCode: existing ? existing.roomCode : null,
-    playerId: existing ? existing.playerId : null
+    playerId: existing ? existing.playerId : null,
+    lastDisconnectAt: existing ? existing.lastDisconnectAt : null
   });
   socket.userID = userID;
   socket.nickname = nickname;
+}
+
+function tryResumeSession(socket) {
+  const sess = sessions.get(socket.userID);
+  if (!sess || !sess.roomCode || !rooms.has(sess.roomCode)) return false;
+
+  const room = rooms.get(sess.roomCode);
+  const player = (sess.playerId && room.players[sess.playerId])
+    || getPlayerByUserId(room, socket.userID);
+  if (!player) return false;
+
+  reconnectPlayer(socket, room, player);
+  return true;
 }
 
 function cleanupPlayerGameState(room, playerId) {
@@ -2021,6 +2084,7 @@ function handleDisconnect(socket) {
   }
 
   sess.socketId = null;
+  sess.lastDisconnectAt = Date.now();
 
   const roomCode = sess.roomCode;
   if (!roomCode || !rooms.has(roomCode)) return;
@@ -2078,7 +2142,7 @@ function reconnectPlayer(socket, room, player) {
     socket.emit('privateInfo', { type: 'role', role: player.role, roleLabel: ROLE_LABELS[player.role] });
   }
   socket.emit('stateSync', toClientState(room, socket.userID));
-  socket.emit('joinResult', { ok: true });
+  socket.emit('joinResult', { ok: true, resumed: true });
   broadcastState(room);
   console.log(`[SESSION] userID=${socket.userID} reconnected to room ${room.code}`);
 }
@@ -2279,6 +2343,13 @@ function handleChat(room, socket, channel, text) {
 // ─── socket handlers ────────────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
+  socket.on('resumeSession', ({ userID, nickname } = {}) => {
+    if (userID && nickname) attachSession(socket, userID, nickname);
+    if (!socket.userID) return reject(socket, '세션 정보가 없습니다.');
+    if (tryResumeSession(socket)) return;
+    socket.emit('stateSync', { phase: 'none', serverInfo: getServerInfoFromSocket(socket) });
+  });
+
   socket.on('join', ({ userID, nickname, roomCode }) => {
     if (!userID || !nickname) return reject(socket, 'userID와 닉네임이 필요합니다.');
     attachSession(socket, userID, nickname);
@@ -2309,7 +2380,7 @@ io.on('connection', (socket) => {
     }
     if (Object.keys(room.players).length >= MAX_PLAYERS) return reject(socket, '방이 가득 찼습니다.');
     if (room.phase !== PHASE.LOBBY) {
-      reject(socket, '게임이 진행 중입니다. 잠시 후 새로고침하면 다시 연결됩니다.');
+      reject(socket, '게임이 진행 중입니다. 같은 브라우저 탭에서 새로고침해 주세요.');
       socket.emit('joinResult', { ok: false, reason: 'game_in_progress' });
       return;
     }
