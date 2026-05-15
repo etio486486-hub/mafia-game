@@ -8,6 +8,7 @@ const fs = require('fs');
 const botBrain = require('./lib/bot-brain');
 const voteFacts = require('./lib/bot-vote-facts');
 const voteIntel = require('./lib/bot-vote-intel');
+const botChatFilter = require('./lib/bot-chat-filter');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -265,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14l',
+    stability: '2026-05-14m',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -407,10 +408,11 @@ function broadcastDeadChatMessage(room, deadMsg) {
 function postBotDeadMessage(room, bot, text) {
   if (!text || !bot || bot.alive) return;
   if (!canEmitRoomEvent(room, 'chat')) return;
+  const safe = botChatFilter.sanitizeBotChatLine(String(text).trim(), bot, isMafiaTeam);
   const deadMsg = {
     from: bot.nickname,
     fromId: bot.id,
-    text: String(text).trim(),
+    text: safe,
     time: Date.now(),
     isDead: true
   };
@@ -1130,6 +1132,11 @@ function postBotDayMessage(room, bot, text) {
     console.warn(`[BOT] chat rate-limited room=${room.code}`);
     return;
   }
+  const safe = botChatFilter.sanitizeBotChatLine(text, bot, isMafiaTeam);
+  if (safe !== text) {
+    console.warn(`[BOT] filtered leak chat from ${bot.nickname}`);
+  }
+  text = safe;
   const msg = { from: bot.nickname, fromId: bot.id, text, time: Date.now() };
   pushChat(room, 'day', msg);
   broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });

@@ -1915,6 +1915,9 @@ function setupMobileOptimizations() {
   if (/iPhone|iPad|iPod|Android|Mobile/i.test(ua)) {
     document.documentElement.classList.add('is-mobile');
   }
+  if (/iPhone|iPad|iPod/i.test(ua)) {
+    document.documentElement.classList.add('is-ios');
+  }
 
   updateMobileViewport();
   window.addEventListener('resize', updateMobileViewport, { passive: true });
@@ -1930,7 +1933,10 @@ function setupMobileOptimizations() {
   const chatInput = $('#chat-input');
   if (chatInput) {
     chatInput.addEventListener('focus', () => {
-      setTimeout(scrollChatToBottom, 280);
+      setTimeout(() => {
+        scrollChatToBottom();
+        chatInput.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }, 280);
     });
   }
 
