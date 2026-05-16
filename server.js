@@ -266,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14p',
+    stability: '2026-05-14r',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -640,6 +640,30 @@ function isRoleClaimRequest(text) {
   return /직공|직업공개|직업ㄱㅇ|홀경|홀의|홀군|직적/.test(c);
 }
 
+function isPoliceSelfClaim(text) {
+  if (!text) return false;
+  const c = String(text).replace(/\s+/g, '');
+  if (!/경찰|홀경/.test(c)) return false;
+  return /(저는|나는|제가|홀경|경찰입니다|경찰이|진경|맞경|진짜경찰)/.test(c);
+}
+
+function notePublicPoliceClaim(room, playerId) {
+  if (!room.game || !playerId) return;
+  if (!room.game.publicPoliceClaimIds) room.game.publicPoliceClaimIds = {};
+  room.game.publicPoliceClaimIds[playerId] = Date.now();
+}
+
+function getPublicPoliceClaimTargets(room, excludeId = null) {
+  const claims = room.game?.publicPoliceClaimIds || {};
+  const out = [];
+  for (const id of Object.keys(claims)) {
+    if (excludeId && id === excludeId) continue;
+    const p = getPlayerById(room, id);
+    if (p && p.alive) out.push(p);
+  }
+  return out;
+}
+
 function isRoleRollCallQuestion(text) {
   if (!text) return false;
   const c = String(text).replace(/\s+/g, '').toLowerCase();
@@ -754,6 +778,7 @@ function postPolicePublicReport(room) {
   };
   pushChat(room, 'day', msg);
   broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
+  notePublicPoliceClaim(room, report.police.id);
   voteIntel.publishPoliceIntelToPublic(room);
   console.log(`[POLICE] public report by ${report.police.nickname}`);
 }
@@ -953,7 +978,12 @@ function pickTopSuspect(room, bot, { excludeMafiaTeam = false, skipBotHumanBias 
 
 function pickBotDayVoteTarget(room, bot) {
   const factTarget = voteFacts.pickFactBasedDayVote(room, bot, voteFactHelpers);
-  if (factTarget) return factTarget;
+  if (factTarget && factTarget !== bot.id) {
+    if (!isMafiaTeam(bot.role) && room.game?.publicPoliceClaimIds?.[factTarget]) {
+      return bot.id;
+    }
+    return factTarget;
+  }
   return bot.id;
 }
 
@@ -995,6 +1025,8 @@ botBrain.configure({
   buildPolicePublicReport,
   isRoleClaimRequest,
   isRoleRollCallQuestion,
+  isPublicPoliceClaim: (room, playerId) => !!(room.game?.publicPoliceClaimIds?.[playerId]),
+  getPublicPoliceClaimTargets: (room, excludeId) => getPublicPoliceClaimTargets(room, excludeId),
   isSelfVoteRequest
 });
 
@@ -1013,19 +1045,29 @@ function pickBotKillTarget(room, mafiaBot) {
 }
 
 function pickBotHealTarget(room, doctorBot) {
+  const revealedPolice = getPublicPoliceClaimTargets(room, doctorBot.id);
   const killTarget = getMafiaKillTarget(room);
-  if (killTarget && killTarget !== doctorBot.id && Math.random() < 0.58) {
+
+  if (revealedPolice.length) {
+    const policeHit = killTarget && revealedPolice.some((p) => p.id === killTarget);
+    if (policeHit) return killTarget;
+    if (Math.random() < 0.88) {
+      return revealedPolice[Math.floor(Math.random() * revealedPolice.length)].id;
+    }
+  }
+
+  if (killTarget && killTarget !== doctorBot.id && Math.random() < 0.55) {
     return killTarget;
   }
 
   const alive = getAlivePlayers(room).filter((p) => p.id !== doctorBot.id);
   const humans = alive.filter((p) => !p.isBot);
-  const powerRoles = [ROLE.POLICE, ROLE.REPORTER, ROLE.SOLDIER, ROLE.POLITICIAN, ROLE.DOCTOR];
+  const powerRoles = [ROLE.POLICE, ROLE.REPORTER, ROLE.SOLDIER, ROLE.POLITICIAN];
   const powerHumans = humans.filter((p) => powerRoles.includes(p.role));
-  if (powerHumans.length && Math.random() < 0.52) {
+  if (powerHumans.length && Math.random() < 0.48) {
     return powerHumans[Math.floor(Math.random() * powerHumans.length)].id;
   }
-  if (humans.length && Math.random() < 0.45) {
+  if (humans.length && Math.random() < 0.4) {
     return humans[Math.floor(Math.random() * humans.length)].id;
   }
 
@@ -1166,6 +1208,9 @@ function postBotDayMessage(room, bot, text) {
   }
   text = safe;
   const msg = { from: bot.nickname, fromId: bot.id, text, time: Date.now() };
+  if (isPoliceSelfClaim(text) || (bot.role === ROLE.POLICE && /수사\s*결과/.test(text))) {
+    notePublicPoliceClaim(room, bot.id);
+  }
   pushChat(room, 'day', msg);
   broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
   recordBotChat(room);
@@ -1516,7 +1561,8 @@ function initGameState(room) {
     dawnAnnouncements: [],
     pendingAnnouncements: [],
     policeIntel: {},
-    publicVoteIntel: []
+    publicVoteIntel: [],
+    publicPoliceClaimIds: {}
   };
   room.chatLog = { lobby: [], day: [], mafia: [], dead: [], lastWords: [] };
   room.pendingReporterReveal = null;
@@ -2980,6 +3026,9 @@ function handleChat(room, socket, channel, text) {
     }
     pushChat(room, 'day', msg);
     broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
+    if (isPoliceSelfClaim(msg.text)) {
+      notePublicPoliceClaim(room, player.id);
+    }
     if (isPoliceReportRequest(msg.text)) {
       schedulePolicePublicReport(room);
     } else if (hasBots(room) && !player.isBot) {
