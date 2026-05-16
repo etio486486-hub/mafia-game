@@ -266,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14s',
+    stability: '2026-05-14t',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -741,13 +741,20 @@ function buildDayVoteTally(room) {
   return tally;
 }
 
-/** 이번 밤(현재 nightIndex) 조사 기록만 — 공개 조결은 1명 */
+/** 공개 조결용: 이번 밤 수사 또는 직전 밤 수사 1건 */
 function getPoliceIntelForReport(room, policeId) {
   const idx = room.game?.nightIndex || 0;
   const list = room.game?.policeIntel?.[policeId] || [];
-  const rows = list
+  if (!list.length) return [];
+
+  const inNight = room.phase === PHASE.NIGHT;
+  let rows = list
     .filter((r) => r.nightIndex === idx)
     .sort((a, b) => (b.at || 0) - (a.at || 0));
+  if (!rows.length && !inNight) {
+    const latest = [...list].sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+    return latest ? [latest] : [];
+  }
   return rows.length ? [rows[0]] : [];
 }
 
@@ -771,15 +778,22 @@ function recordPoliceInvestigation(room, policeId, targetId, isMafia) {
   });
 }
 
-function buildPolicePublicReport(room) {
-  const police = Object.values(room.players).find((p) => p.role === ROLE.POLICE && p.alive);
+function buildPolicePublicReport(room, policeIdOptional) {
+  let police;
+  if (policeIdOptional) {
+    police = getPlayerById(room, policeIdOptional);
+    if (!police || police.role !== ROLE.POLICE || !police.alive) return null;
+  } else {
+    police = Object.values(room.players).find((p) => p.role === ROLE.POLICE && p.alive);
+  }
   if (!police) return null;
 
   const intel = getPoliceIntelForReport(room, police.id);
   if (!intel.length) {
     return {
       police,
-      text: '저는 아직 조사한 사람이 없습니다. 밤에 수사할 대상을 지목해 주세요.'
+      hasIntel: false,
+      text: null
     };
   }
 
@@ -792,22 +806,20 @@ function buildPolicePublicReport(room) {
     else parts.push(`${name}님은 마피아가 아닙니다`);
   }
   if (!parts.length) {
-    return {
-      police,
-      text: '저는 아직 조사한 사람이 없습니다. 밤에 수사할 대상을 지목해 주세요.'
-    };
+    return { police, hasIntel: false, text: null };
   }
 
   return {
     police,
+    hasIntel: true,
     text: `수사 결과입니다. ${parts.join('. ')}.`
   };
 }
 
-function postPolicePublicReport(room) {
+function postPolicePublicReport(room, policeIdOptional) {
   if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
-  const report = buildPolicePublicReport(room);
-  if (!report) return;
+  const report = buildPolicePublicReport(room, policeIdOptional);
+  if (!report || !report.hasIntel || !report.text) return;
 
   const msg = {
     from: report.police.nickname,
@@ -822,13 +834,13 @@ function postPolicePublicReport(room) {
   console.log(`[POLICE] public report by ${report.police.nickname}`);
 }
 
-function schedulePolicePublicReport(room) {
-  if (!room.game || room.phase !== PHASE.DAY_CHAT) return;
+function schedulePolicePublicReport(room, policeId) {
+  if (!room.game || room.phase !== PHASE.DAY_CHAT || !policeId) return;
   if (room._policeReportTimer) clearTimeout(room._policeReportTimer);
   room._policeReportTimer = setTimeout(() => {
     room._policeReportTimer = null;
     if (room.phase !== PHASE.DAY_CHAT) return;
-    postPolicePublicReport(room);
+    postPolicePublicReport(room, policeId);
   }, 350);
 }
 
@@ -1440,8 +1452,13 @@ function runBotNightActions(room) {
     if (bot.role === ROLE.SPY && !actions.spyTarget) {
       actions.spyTarget = pickBotNightActionTarget(room, bot, ROLE.SPY);
     }
-    if (bot.role === ROLE.POLICE && !actions.policeTarget) {
-      actions.policeTarget = pickBotNightActionTarget(room, bot, ROLE.POLICE);
+    if (bot.role === ROLE.POLICE && !actions.policeResolved) {
+      if (!actions.policeTarget) {
+        actions.policeTarget = pickBotNightActionTarget(room, bot, ROLE.POLICE);
+      }
+      if (actions.policeTarget && !actions.policeResolved) {
+        deliverPoliceResult(room, bot, actions.policeTarget);
+      }
     }
     if (bot.role === ROLE.DOCTOR && !actions.doctorTarget) {
       actions.doctorTarget = pickBotNightActionTarget(room, bot, ROLE.DOCTOR);
@@ -2196,18 +2213,8 @@ function startDayChat(room) {
   clearBotChatTimers(room);
   const debateMs = computeDayChatDurationMs(room);
   setPhase(room, PHASE.DAY_CHAT, debateMs);
-  postBotPoliceReportAtDayStart(room);
   scheduleBotDawnSkillReactions(room);
   scheduleBotDayChat(room);
-}
-
-/** 경찰 봇: 낮 토론 시작 직후 조결 공개 (다른 봇이 팩트 기준으로 반응) */
-function postBotPoliceReportAtDayStart(room) {
-  const police = Object.values(room.players).find(
-    (p) => p.role === ROLE.POLICE && p.alive && p.isBot
-  );
-  if (!police || !getPoliceIntelForReport(room, police.id).length) return;
-  postPolicePublicReport(room);
 }
 
 function startDayVote(room) {
@@ -2309,7 +2316,24 @@ function onPhaseTimeout(room) {
 // ─── night resolver ─────────────────────────────────────────────────────────────
 
 function getMafiaKillTarget(room) {
-  const votes = room.game.nightActions.mafiaVotes;
+  const mafiaAlive = getAlivePlayers(room).filter((p) => p.role === ROLE.MAFIA);
+  const votes = room.game.nightActions.mafiaVotes || {};
+
+  if (mafiaAlive.length >= 2) {
+    const allVoted = mafiaAlive.every((m) => votes[m.id]);
+    if (!allVoted) {
+      console.log('[NIGHT][3-Kill] mafia unanimous required — not all voted yet');
+      return null;
+    }
+    const targets = mafiaAlive.map((m) => votes[m.id]);
+    const unique = [...new Set(targets)];
+    if (unique.length !== 1) {
+      console.log('[NIGHT][3-Kill] mafia votes split — no kill');
+      return null;
+    }
+    return unique[0];
+  }
+
   const tally = {};
   for (const targetId of Object.values(votes)) {
     if (!targetId) continue;
@@ -2950,6 +2974,10 @@ function recordPoliceInvestigate(room, socket, targetId) {
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.policeTarget = targetId;
   deliverPoliceResult(room, player, targetId);
+  if (!room.game.nightActions.policeResolved) {
+    return reject(socket, '조사에 실패했습니다. 대상을 다시 선택해 주세요.');
+  }
+  broadcastState(room);
 }
 
 function recordDoctorHeal(room, socket, targetId) {
@@ -3086,7 +3114,11 @@ function handleChat(room, socket, channel, text) {
       notePublicPoliceClaim(room, player.id);
     }
     if (isPoliceReportRequest(msg.text)) {
-      schedulePolicePublicReport(room);
+      if (player.role === ROLE.POLICE && player.alive) {
+        schedulePolicePublicReport(room, player.id);
+      } else if (hasBots(room) && !player.isBot) {
+        scheduleBotReplyToHuman(room, { triggerText: msg.text });
+      }
     } else if (hasBots(room) && !player.isBot) {
       scheduleBotReplyToHuman(room, { triggerText: msg.text });
     }

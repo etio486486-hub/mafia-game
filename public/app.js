@@ -1247,7 +1247,10 @@ function renderActionPanel() {
     if (state.myRole === ROLE.MAFIA) {
       addConfirmBtn(btns, '암살 투표', () => emitNightAction('mafiaVote'));
       const mates = state.players.filter(pl => pl.isMafiaTeammate);
-      if (mates.length) {
+      const mateCount = mates.length + 1;
+      if (mateCount >= 2) {
+        hint.textContent = `팀 ${mateCount}명 — 모두 같은 사람에 투표해야 살해합니다. 동료: ${mates.map(m => m.nickname).join(', ')}`;
+      } else if (mates.length) {
         hint.textContent = `팀 동료: ${mates.map(m => m.nickname).join(', ')} — 마피아 채팅·암살 표를 맞추세요.`;
       } else {
         hint.textContent = '단독 마피아입니다. 마피아 채팅은 본인만 볼 수 있습니다.';
