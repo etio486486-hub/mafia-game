@@ -457,7 +457,7 @@ function flashPlayerCard(playerId, fxClass) {
 }
 
 function hasNightSkill(role) {
-  return [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER].includes(role);
+  return [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.MEDIUM].includes(role);
 }
 
 function setPhaseTheme(phase) {
@@ -1199,9 +1199,14 @@ function renderActionPanel() {
     if (state.myRole === ROLE.POLICE) addConfirmBtn(btns, '마피아 조사', () => emitNightAction('policeInvestigate'));
     if (state.myRole === ROLE.DOCTOR) addConfirmBtn(btns, '치료', () => emitNightAction('doctorHeal'));
     if (state.myRole === ROLE.MEDIUM) {
-      addConfirmBtn(btns, '성불', () => emitNightAction('mediumPurify'));
-      if (state.canDeadChatView) {
-        hint.textContent = '사망자를 선택해 성불하세요. 사망자 탭에서 봇·사람 대화도 확인할 수 있습니다.';
+      const deadN = countDeadPlayers();
+      if (deadN > 0) {
+        addConfirmBtn(btns, '성불', () => emitNightAction('mediumPurify'));
+        hint.textContent = state.canDeadChatView
+          ? `사망자 ${deadN}명 중 한 명을 선택한 뒤 성불하세요. (이번 밤에 죽은 사람은 아침 이후 가능)`
+          : `사망자 ${deadN}명 중 한 명을 선택한 뒤 성불하세요.`;
+      } else {
+        hint.textContent = '이번 밤에 성불할 사망자가 없습니다. 이전에 죽은 사람만 성불할 수 있습니다.';
       }
     }
     if (state.myRole === ROLE.REPORTER && !state.reporterUsed && (state.nightIndex || 0) >= 2) {
@@ -1282,9 +1287,26 @@ function emitNightAction(event) {
   if (fx) runAnimation(fx.anim, { targetId: selectedTargetId, cardFx: fx.cardFx });
 }
 
+function countDeadPlayers() {
+  if (!state || !state.players) return 0;
+  return state.players.filter((p) => !p.alive).length;
+}
+
 function onPlayerCardClick(id) {
   const player = state.players.find((p) => p.id === id);
   const me = state.players.find((p) => p.id === state.myPlayerId);
+
+  if (state.phase === 'night' && me && me.alive && player) {
+    if (!canSelectPlayerSlot(player)) {
+      if (state.myRole === ROLE.MEDIUM) {
+        if (player.alive) {
+          return showToast('사망자만 성불할 수 있습니다. (이번 밤에 죽은 사람은 아침 이후에 성불 가능)');
+        }
+        return showToast('이 대상은 선택할 수 없습니다.');
+      }
+      return showToast('생존자만 선택할 수 있습니다.');
+    }
+  }
 
   if (state.phase === 'day_vote' && me && me.alive && player && player.alive) {
     const isCancel = state.myDayVoteTarget === id;

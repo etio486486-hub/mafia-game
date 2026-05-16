@@ -2993,7 +2993,14 @@ body.phase-night .m42-banner-main {
 .m42-player-grid .player-card.dead.medium-target {
   opacity: 0.72;
   cursor: pointer;
+  pointer-events: auto;
   filter: grayscale(0.45);
+}
+
+.m42-player-grid .player-card.dead.medium-target .slot-select,
+.m42-player-grid .player-card.dead.medium-target .slot-target-btn {
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 .m42-player-grid .player-card.dead.medium-target.selected {

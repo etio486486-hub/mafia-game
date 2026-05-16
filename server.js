@@ -266,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14n',
+    stability: '2026-05-14o',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -671,6 +671,16 @@ function buildDayVoteTally(room) {
   return tally;
 }
 
+/** 이번 밤(현재 nightIndex) 조사 기록만 — 공개 조결은 1명 */
+function getPoliceIntelForReport(room, policeId) {
+  const idx = room.game?.nightIndex || 0;
+  const list = room.game?.policeIntel?.[policeId] || [];
+  const rows = list
+    .filter((r) => r.nightIndex === idx)
+    .sort((a, b) => (b.at || 0) - (a.at || 0));
+  return rows.length ? [rows[0]] : [];
+}
+
 function recordPoliceInvestigation(room, policeId, targetId, isMafia) {
   if (!room.game) return;
   const target = getPlayerById(room, targetId);
@@ -678,26 +688,24 @@ function recordPoliceInvestigation(room, policeId, targetId, isMafia) {
   if (!room.game.policeIntel) room.game.policeIntel = {};
   if (!room.game.policeIntel[policeId]) room.game.policeIntel[policeId] = [];
   const list = room.game.policeIntel[policeId];
-  const existing = list.find((e) => e.targetId === targetId);
-  const row = {
+  const nightIndex = room.game.nightIndex || 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i].nightIndex === nightIndex) list.splice(i, 1);
+  }
+  list.push({
     targetId,
     targetName: target.nickname,
     isMafia: !!isMafia,
-    nightIndex: room.game.nightIndex || 0,
+    nightIndex,
     at: Date.now()
-  };
-  if (existing) {
-    Object.assign(existing, row);
-  } else {
-    list.push(row);
-  }
+  });
 }
 
 function buildPolicePublicReport(room) {
   const police = Object.values(room.players).find((p) => p.role === ROLE.POLICE && p.alive);
   if (!police) return null;
 
-  const intel = (room.game.policeIntel && room.game.policeIntel[police.id]) || [];
+  const intel = getPoliceIntelForReport(room, police.id);
   if (!intel.length) {
     return {
       police,
@@ -705,11 +713,8 @@ function buildPolicePublicReport(room) {
     };
   }
 
-  const seen = new Set();
   const parts = [];
   for (const row of intel) {
-    if (seen.has(row.targetId)) continue;
-    seen.add(row.targetId);
     const t = getPlayerById(room, row.targetId);
     const name = (t && t.nickname) || row.targetName;
     if (!name || String(name).trim() === '?' || String(name).trim() === '') continue;
@@ -1059,18 +1064,13 @@ function pickBotPoliceInvestigateTarget(room, police) {
   const alive = getAlivePlayers(room).filter((p) => p.id !== police.id);
   if (!alive.length) return null;
 
+  const nightIndex = room.game?.nightIndex || 0;
   const intel = (room.game?.policeIntel?.[police.id]) || [];
-  const investigated = new Set(intel.map((r) => r.targetId));
-  let pool = alive.filter((p) => !investigated.has(p.id));
-
-  if (!pool.length && intel.length) {
-    const byAge = [...intel].sort((a, b) => (a.at || 0) - (b.at || 0));
-    for (const row of byAge) {
-      const p = getPlayerById(room, row.targetId);
-      if (p && p.alive && p.id !== police.id) return p.id;
-    }
-    pool = alive;
-  }
+  const investigatedTonight = new Set(
+    intel.filter((r) => r.nightIndex === nightIndex).map((r) => r.targetId)
+  );
+  let pool = alive.filter((p) => !investigatedTonight.has(p.id));
+  if (!pool.length) pool = alive;
 
   const humans = pool.filter((p) => !p.isBot);
   const mind = getBotMind(room, police.id);
@@ -1699,6 +1699,7 @@ function emitSkillNotice(userID, payload) {
 function deliverPoliceResult(room, police, targetId) {
   const target = getPlayerById(room, targetId);
   if (!police || !target || !police.alive) return;
+  if (room.game?.nightActions?.policeResolved) return;
   const isMafia = isMafiaRole(target.role);
   emitMotionToUser(police.userID, isMafia ? {
     type: 'police_mafia',
@@ -1818,6 +1819,7 @@ function deliverReporterScoop(room, reporter, targetId) {
 function deliverMediumResult(room, medium, targetId) {
   const target = getPlayerById(room, targetId);
   if (!medium || !target || !medium.alive || target.alive) return;
+  if (room.game?.nightActions?.mediumResolved) return;
   emitMotionToUser(medium.userID, {
     type: 'spy_investigate',
     title: '영매 성불',
@@ -2097,7 +2099,7 @@ function postBotPoliceReportAtDayStart(room) {
   const police = Object.values(room.players).find(
     (p) => p.role === ROLE.POLICE && p.alive && p.isBot
   );
-  if (!police || !room.game?.policeIntel?.[police.id]?.length) return;
+  if (!police || !getPoliceIntelForReport(room, police.id).length) return;
   postPolicePublicReport(room);
 }
 
@@ -2827,6 +2829,7 @@ function recordPoliceInvestigate(room, socket, targetId) {
   const player = getViewer(room, socket);
   if (!player || !player.alive || player.role !== ROLE.POLICE) return reject(socket, '경찰만 조사할 수 있습니다.');
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
+  if (room.game.nightActions.policeResolved) return reject(socket, '이번 밤에는 이미 조사했습니다.');
   const valid = validateNightTarget(room, player, targetId);
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.policeTarget = targetId;
@@ -2868,10 +2871,22 @@ function recordMediumPurify(room, socket, targetId) {
   const player = getViewer(room, socket);
   if (!player || !player.alive || player.role !== ROLE.MEDIUM) return reject(socket, '영매만 성불할 수 있습니다.');
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
+  if (room.game.nightActions.mediumResolved) return reject(socket, '이번 밤에는 이미 성불했습니다.');
+  const deadCount = Object.values(room.players).filter((p) => !p.alive).length;
+  if (!deadCount) return reject(socket, '성불할 사망자가 없습니다. (이번 밤에 죽은 사람은 다음 낮부터 성불할 수 있습니다.)');
   const valid = validateNightTarget(room, player, targetId, { aliveOnly: false, deadOnly: true });
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.mediumTarget = targetId;
   deliverMediumResult(room, player, targetId);
+  if (!room.game.nightActions.mediumResolved) {
+    return reject(socket, '성불에 실패했습니다. 사망자를 다시 선택해 주세요.');
+  }
+  socket.emit('privateInfo', {
+    type: 'actionConfirm',
+    action: 'medium',
+    targetId,
+    targetName: playerName(room, targetId)
+  });
   broadcastState(room);
 }
 
