@@ -266,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14v',
+    stability: '2026-05-14w',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -628,7 +628,7 @@ function ensureBotMinds(room) {
 function getBotMind(room, botId) {
   const minds = ensureBotMinds(room);
   if (!minds[botId]) {
-    minds[botId] = { knownRoles: {}, trust: {}, accused: {} };
+    minds[botId] = { knownRoles: {}, trust: {}, accused: {}, fakeClaim: null };
   }
   return minds[botId];
 }
@@ -1109,6 +1109,10 @@ botBrain.configure({
   getAccuseReasonForTarget: (room, bot, id) => voteFacts.getAccuseReasonForTarget(room, bot, id, voteFactHelpers),
   formatAccuseLine: (room, bot, id, speaker) => voteFacts.formatAccuseLine(room, bot, id, voteFactHelpers, speaker),
   getBotMind,
+  getBotFakeClaim: (room, botId) => getBotMind(room, botId).fakeClaim,
+  setBotFakeClaim: (room, botId, role) => {
+    getBotMind(room, botId).fakeClaim = role;
+  },
   isPoliceReportRequest,
   buildPolicePublicReport,
   isRoleClaimRequest,
