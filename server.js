@@ -267,7 +267,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-15e',
+    stability: '2026-05-15g',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -932,7 +932,10 @@ function scheduleMafiaMatgyeongAfterReport(room, reporterId) {
   const delay = 500 + Math.floor(Math.random() * 700);
   scheduleRoomTask(room, () => {
     if (room.phase !== PHASE.DAY_CHAT) return;
-    const text = m42Bluff.buildMatgyeongCounterClaim(room, bluffer, voteFactHelpers);
+    const day1 = (room.game?.dayIndex || 0) <= 1;
+    const text = day1
+      ? m42Bluff.buildPoliceStyleBluffLine(room, bluffer, voteFactHelpers)
+      : m42Bluff.buildMatgyeongCounterClaim(room, bluffer, voteFactHelpers);
     if (text) postBotDayMessage(room, bluffer, text);
   }, delay);
 }
@@ -945,13 +948,14 @@ function scheduleMafiaEarlyPoliceBluff(room) {
   const bluffer = mafiaBots[Math.floor(Math.random() * mafiaBots.length)];
   scheduleRoomTask(room, () => {
     if (room.phase !== PHASE.DAY_CHAT) return;
+    const day1 = (room.game?.dayIndex || 0) <= 1;
     const reporters = m42Bluff.scanPoliceReporters(room, voteFactHelpers);
-    if (reporters.length >= 2) return;
-    const text = reporters.length === 0
-      ? m42Bluff.buildBluffOpenLine('police', bluffer, room)
+    if (!day1 && reporters.length >= 2) return;
+    const text = day1 || reporters.length === 0
+      ? m42Bluff.buildPoliceStyleBluffLine(room, bluffer, voteFactHelpers)
       : m42Bluff.buildMatgyeongCounterClaim(room, bluffer, voteFactHelpers);
     if (text) postBotDayMessage(room, bluffer, text);
-  }, 1200 + Math.floor(Math.random() * 800));
+  }, 800 + Math.floor(Math.random() * 600));
 }
 
 /** 누가 요청해도 생존 경찰(사람·봇)이 조결 응답 */
@@ -1601,8 +1605,7 @@ function runBotNightActions(room) {
 
   const mafiaBots = bots.filter(p => p.role === ROLE.MAFIA);
   if (mafiaBots.length) {
-    const killTarget = pickBotNightActionTarget(room, mafiaBots[0], ROLE.MAFIA);
-    mafiaBots.forEach(m => { if (killTarget) actions.mafiaVotes[m.id] = killTarget; });
+    syncMafiaKillVotes(room);
   }
 
   for (const bot of bots) {
@@ -2495,39 +2498,87 @@ function onPhaseTimeout(room) {
 
 // ─── night resolver ─────────────────────────────────────────────────────────────
 
+/** 생존 마피아 봇 표를 사람 표·합의 대상에 맞춤 (사람/봇 표 불일치로 살해 실패 방지) */
+function syncMafiaKillVotes(room) {
+  if (!room.game?.nightActions) return;
+  const actions = room.game.nightActions;
+  if (!actions.mafiaVotes) actions.mafiaVotes = {};
+
+  const mafiaAlive = getAlivePlayers(room).filter((p) => p.role === ROLE.MAFIA);
+  if (!mafiaAlive.length) return;
+
+  const humanMafia = mafiaAlive.filter((m) => !m.isBot);
+  const botMafia = mafiaAlive.filter((m) => m.isBot);
+  if (!botMafia.length) return;
+
+  const humanVotes = [...new Set(humanMafia.map((m) => actions.mafiaVotes[m.id]).filter(Boolean))];
+  let consensus = null;
+
+  if (humanVotes.length === 1) {
+    consensus = humanVotes[0];
+  } else if (humanVotes.length > 1) {
+    return;
+  } else {
+    const botVotes = [...new Set(botMafia.map((m) => actions.mafiaVotes[m.id]).filter(Boolean))];
+    if (botVotes.length === 1) consensus = botVotes[0];
+    else consensus = pickBotKillTarget(room, mafiaAlive[0]);
+  }
+
+  if (!consensus) return;
+  for (const m of botMafia) {
+    actions.mafiaVotes[m.id] = consensus;
+  }
+}
+
 function getMafiaKillTarget(room) {
+  if (!room.game?.nightActions) return null;
+  syncMafiaKillVotes(room);
+
   const mafiaAlive = getAlivePlayers(room).filter((p) => p.role === ROLE.MAFIA);
   const votes = room.game.nightActions.mafiaVotes || {};
+  if (!mafiaAlive.length) return null;
 
-  if (mafiaAlive.length >= 2) {
-    const allVoted = mafiaAlive.every((m) => votes[m.id]);
-    if (!allVoted) {
-      console.log('[NIGHT][3-Kill] mafia unanimous required — not all voted yet');
+  if (mafiaAlive.length === 1) {
+    return votes[mafiaAlive[0].id] || null;
+  }
+
+  const humanMafia = mafiaAlive.filter((m) => !m.isBot);
+  const botMafia = mafiaAlive.filter((m) => m.isBot);
+
+  if (humanMafia.length === 1 && botMafia.length >= 1) {
+    const hv = votes[humanMafia[0].id];
+    if (!hv) {
+      console.log('[NIGHT][3-Kill] mafia need player vote');
       return null;
     }
-    const targets = mafiaAlive.map((m) => votes[m.id]);
+    if (botMafia.every((b) => votes[b.id] === hv)) return hv;
+    console.log('[NIGHT][3-Kill] mafia player/bot vote mismatch');
+    return null;
+  }
+
+  if (humanMafia.length === 0 && botMafia.length >= 2) {
+    const targets = botMafia.map((m) => votes[m.id]).filter(Boolean);
+    if (targets.length !== botMafia.length) {
+      console.log('[NIGHT][3-Kill] mafia bots missing votes');
+      return null;
+    }
     const unique = [...new Set(targets)];
-    if (unique.length !== 1) {
-      console.log('[NIGHT][3-Kill] mafia votes split — no kill');
-      return null;
-    }
-    return unique[0];
+    if (unique.length === 1) return unique[0];
+    console.log('[NIGHT][3-Kill] mafia bot votes split');
+    return null;
   }
 
-  const tally = {};
-  for (const targetId of Object.values(votes)) {
-    if (!targetId) continue;
-    tally[targetId] = (tally[targetId] || 0) + 1;
+  const allVoted = mafiaAlive.every((m) => votes[m.id]);
+  if (!allVoted) {
+    console.log('[NIGHT][3-Kill] mafia unanimous required — not all voted yet');
+    return null;
   }
-  let max = 0;
-  let candidates = [];
-  for (const [id, count] of Object.entries(tally)) {
-    if (count > max) { max = count; candidates = [id]; }
-    else if (count === max) candidates.push(id);
+  const unique = [...new Set(mafiaAlive.map((m) => votes[m.id]))];
+  if (unique.length !== 1) {
+    console.log('[NIGHT][3-Kill] mafia votes split — no kill');
+    return null;
   }
-  if (candidates.length === 1) return candidates[0];
-  if (candidates.length > 1) return candidates[Math.floor(Math.random() * candidates.length)];
-  return null;
+  return unique[0];
 }
 
 function resolveNight(room) {
@@ -3122,6 +3173,7 @@ function recordMafiaVote(room, socket, targetId) {
   const valid = validateNightTarget(room, player, targetId);
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.mafiaVotes[player.id] = targetId;
+  syncMafiaKillVotes(room);
   emitSkillNotice(player.userID, {
     scope: 'private',
     kind: 'mafia',

@@ -1249,7 +1249,7 @@ function renderActionPanel() {
       const mates = state.players.filter(pl => pl.isMafiaTeammate);
       const mateCount = mates.length + 1;
       if (mateCount >= 2) {
-        hint.textContent = `팀 ${mateCount}명 — 모두 같은 사람에 투표해야 살해합니다. 동료: ${mates.map(m => m.nickname).join(', ')}`;
+        hint.textContent = `팀 ${mateCount}명 — 살해하려면 같은 사람을 지목하세요. (봇 동료는 당신 표를 따릅니다) 동료: ${mates.map(m => m.nickname).join(', ')}`;
       } else if (mates.length) {
         hint.textContent = `팀 동료: ${mates.map(m => m.nickname).join(', ')} — 마피아 채팅·암살 표를 맞추세요.`;
       } else {
