@@ -266,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14x',
+    stability: '2026-05-14y',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -1500,8 +1500,13 @@ function runBotNightActions(room) {
   }
 
   for (const bot of bots) {
-    if (bot.role === ROLE.SPY && !actions.spyTarget) {
-      actions.spyTarget = pickBotNightActionTarget(room, bot, ROLE.SPY);
+    if (bot.role === ROLE.SPY && !actions.spyResolved) {
+      if (!actions.spyTarget) {
+        actions.spyTarget = pickBotNightActionTarget(room, bot, ROLE.SPY);
+      }
+      if (actions.spyTarget && !actions.spyResolved) {
+        deliverSpyResult(room, bot, actions.spyTarget);
+      }
     }
     if (bot.role === ROLE.POLICE && !actions.policeResolved) {
       if (!actions.policeTarget) {
@@ -1792,6 +1797,9 @@ function toClientState(room, viewerUserId, opts = {}) {
     myRole: viewer ? viewer.role : null,
     myRoleLabel: viewer && viewer.role ? ROLE_LABELS[viewer.role] : null,
     reporterUsed: viewer ? viewer.reporterUsed : false,
+    spyResolved: !!(viewer && room.game && room.game.nightActions && room.game.nightActions.spyResolved),
+    policeResolved: !!(viewer && room.game && room.game.nightActions && room.game.nightActions.policeResolved),
+    mediumResolved: !!(viewer && room.game && room.game.nightActions && room.game.nightActions.mediumResolved),
     joinedMafiaChat: viewer ? viewer.joinedMafiaChat : false,
     canTimeShorten: !!(viewer && viewer.alive && room.phaseTimer && !viewer.timeShortened &&
       room.phase !== PHASE.NIGHT && room.phase !== PHASE.DAWN &&
@@ -1907,6 +1915,7 @@ function deliverPoliceResult(room, police, targetId) {
 function deliverSpyResult(room, spy, targetId) {
   const target = getPlayerById(room, targetId);
   if (!spy || !target || !spy.alive) return;
+  if (room.game?.nightActions?.spyResolved) return;
   const resultRole = target.role;
   const isMafia = isMafiaRole(resultRole);
   if (isMafia) spy.joinedMafiaChat = true;
@@ -2501,7 +2510,6 @@ function resolveNight(room) {
     const spy = Object.values(room.players).find(p => p.role === ROLE.SPY && p.alive);
     const target = getPlayerById(room, spyTarget);
     if (spy && target && !g.nightActions.spyResolved) {
-      g.nightActions.spyResolved = true;
       deliverSpyResult(room, spy, spyTarget);
     }
   }
@@ -3017,10 +3025,14 @@ function recordSpyInvestigate(room, socket, targetId) {
   const player = getViewer(room, socket);
   if (!player || !player.alive || player.role !== ROLE.SPY) return reject(socket, '스파이만 조사할 수 있습니다.');
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
+  if (room.game.nightActions.spyResolved) return reject(socket, '이번 밤에는 이미 조사했습니다.');
   const valid = validateNightTarget(room, player, targetId);
   if (!valid.ok) return reject(socket, valid.message);
   room.game.nightActions.spyTarget = targetId;
   deliverSpyResult(room, player, targetId);
+  if (!room.game.nightActions.spyResolved) {
+    return reject(socket, '조사에 실패했습니다. 대상을 다시 선택해 주세요.');
+  }
 }
 
 function recordPoliceInvestigate(room, socket, targetId) {

@@ -1262,8 +1262,18 @@ function renderActionPanel() {
         hint.textContent = `접선한 마피아 팀: ${mates.map(m => m.nickname).join(', ')}`;
       }
     }
-    if (state.myRole === ROLE.SPY) addConfirmBtn(btns, '직업 조사', () => emitNightAction('spyInvestigate'));
-    if (state.myRole === ROLE.POLICE) addConfirmBtn(btns, '마피아 조사', () => emitNightAction('policeInvestigate'));
+    if (state.myRole === ROLE.SPY && !state.spyResolved) {
+      addConfirmBtn(btns, '직업 조사', () => emitNightAction('spyInvestigate'));
+    }
+    if (state.myRole === ROLE.SPY && state.spyResolved) {
+      hint.textContent = '이번 밤 조사를 완료했습니다.';
+    }
+    if (state.myRole === ROLE.POLICE && !state.policeResolved) {
+      addConfirmBtn(btns, '마피아 조사', () => emitNightAction('policeInvestigate'));
+    }
+    if (state.myRole === ROLE.POLICE && state.policeResolved) {
+      hint.textContent = '이번 밤 조사를 완료했습니다.';
+    }
     if (state.myRole === ROLE.DOCTOR) addConfirmBtn(btns, '치료', () => emitNightAction('doctorHeal'));
     if (state.myRole === ROLE.MEDIUM) {
       const deadN = countDeadPlayers();
