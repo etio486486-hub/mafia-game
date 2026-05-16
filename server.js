@@ -266,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-15c',
+    stability: '2026-05-15d',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
