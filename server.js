@@ -266,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14u',
+    stability: '2026-05-14v',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -666,9 +666,11 @@ function isPoliceReportRequest(text) {
   if (!text) return false;
   const raw = String(text);
   const compact = raw.replace(/\s+/g, '');
-  if (/경찰조사|경찰수사|수사결과|조사결과|경찰결과|조결|조사결/.test(compact)) return true;
+  if (/경조결|경찰조사|경찰수사|수사결과|조사결과|경찰결과|조결|조사결|경찰조사결과/.test(compact)) {
+    return true;
+  }
+  if (/경조/.test(compact)) return true;
   if (/경찰/.test(compact) && /(조사|수사|결과|ㄱㅈ|알려|말해|공개|발표|조결)/.test(compact)) return true;
-  if (/경조/.test(compact) && /(조사|결과|알려|ㄱㅈ)/.test(compact)) return true;
   if (/경찰/.test(raw) && /(누구|마피아)/.test(raw)) return true;
   return false;
 }
@@ -819,19 +821,54 @@ function buildPolicePublicReport(room, policeIdOptional) {
 function postPolicePublicReport(room, policeIdOptional) {
   if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
   const report = buildPolicePublicReport(room, policeIdOptional);
-  if (!report || !report.hasIntel || !report.text) return;
+  if (!report || !report.police) return;
+
+  const text = report.hasIntel && report.text
+    ? report.text
+    : '조결 요청입니다. 아직 이번 밤에 수사한 기록이 없습니다. 밤에 대상을 지목한 뒤 다시 조결해 주세요.';
 
   const msg = {
     from: report.police.nickname,
     fromId: report.police.id,
-    text: report.text,
+    text,
     time: Date.now()
   };
   pushChat(room, 'day', msg);
   broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
   notePublicPoliceClaim(room, report.police.id);
-  voteIntel.publishPoliceIntelToPublic(room);
-  console.log(`[POLICE] public report by ${report.police.nickname}`);
+  if (report.hasIntel) voteIntel.publishPoliceIntelToPublic(room);
+  console.log(`[POLICE] public report by ${report.police.nickname} intel=${!!report.hasIntel}`);
+}
+
+/** 경찰 봇: 조결·경찰조사 요청 시 즉시 답변 */
+function replyBotPoliceReport(room, policeBot) {
+  if (!policeBot || !policeBot.alive || policeBot.role !== ROLE.POLICE || !policeBot.isBot) return;
+  if (room.phase !== PHASE.DAY_CHAT) return;
+  const report = buildPolicePublicReport(room, policeBot.id);
+  const text = report && report.hasIntel && report.text
+    ? report.text
+    : '조결 요청 확인했습니다. 이번 밤 수사 기록이 없습니다. 밤에 대상을 지목해 주시면 낮에 조결로 말씀드리겠습니다.';
+  postBotDayMessage(room, policeBot, text);
+}
+
+/** 누가 요청해도 생존 경찰(사람·봇)이 조결 응답 */
+function schedulePoliceReportResponses(room) {
+  if (!room.game || room.phase !== PHASE.DAY_CHAT) return;
+  const policeList = Object.values(room.players).filter(
+    (p) => p.role === ROLE.POLICE && p.alive
+  );
+  if (!policeList.length) {
+    pushGameSystemMessage(room, '생존 경찰이 없어 조결을 받을 수 없습니다.');
+    return;
+  }
+  policeList.forEach((police, i) => {
+    const delay = 400 + i * 500;
+    if (police.isBot) {
+      scheduleRoomTask(room, () => replyBotPoliceReport(room, police), delay);
+    } else {
+      scheduleRoomTask(room, () => postPolicePublicReport(room, police.id), delay);
+    }
+  });
 }
 
 function schedulePolicePublicReport(room, policeId) {
@@ -1277,8 +1314,16 @@ async function runBotDayChat(room, ctx = {}) {
 
   room.botChatInFlight = true;
   try {
-    const bot = shuffle(bots)[0];
+    let bot;
+    const trigger = ctx.triggerText || '';
+    if (ctx.policeReport && isPoliceReportRequest(trigger)) {
+      bot = bots.find((p) => p.role === ROLE.POLICE)
+        || bots.find((p) => p.role !== ROLE.POLICE);
+    } else {
+      bot = shuffle(bots)[0];
+    }
     const text = await botBrain.generateBotChat(room, bot, ctx);
+    if (!text) return;
     postBotDayMessage(room, bot, text);
   } catch (err) {
     console.warn('[BOT] day-chat error', err.message);
@@ -1291,11 +1336,13 @@ function scheduleBotReplyToHuman(room, opts = {}) {
   if (!hasBots(room) || room.phase !== PHASE.DAY_CHAT) return;
   if (room._botHumanReplyTimer) clearTimeout(room._botHumanReplyTimer);
   const triggerText = opts.triggerText || '';
+  const policeReport = !!opts.policeReport || isPoliceReportRequest(triggerText);
+  const delay = policeReport ? 2200 : BOT_CHAT.HUMAN_REPLY_WAIT_MS;
   room._botHumanReplyTimer = setTimeout(() => {
     room._botHumanReplyTimer = null;
     if (room.phase !== PHASE.DAY_CHAT) return;
-    runBotDayChat(room, { triggerText });
-  }, BOT_CHAT.HUMAN_REPLY_WAIT_MS);
+    runBotDayChat(room, { triggerText, policeReport });
+  }, delay);
 }
 
 function scheduleBotDayChat(room) {
@@ -2215,6 +2262,14 @@ function startDayChat(room) {
   setPhase(room, PHASE.DAY_CHAT, debateMs);
   scheduleBotDawnSkillReactions(room);
   scheduleBotDayChat(room);
+  scheduleRoomTask(room, () => {
+    const policeBot = Object.values(room.players).find(
+      (p) => p.role === ROLE.POLICE && p.alive && p.isBot
+    );
+    if (policeBot && getPoliceIntelForReport(room, policeBot.id).length) {
+      replyBotPoliceReport(room, policeBot);
+    }
+  }, 3500);
 }
 
 function startDayVote(room) {
@@ -3114,11 +3169,7 @@ function handleChat(room, socket, channel, text) {
       notePublicPoliceClaim(room, player.id);
     }
     if (isPoliceReportRequest(msg.text)) {
-      if (player.role === ROLE.POLICE && player.alive) {
-        schedulePolicePublicReport(room, player.id);
-      } else if (hasBots(room) && !player.isBot) {
-        scheduleBotReplyToHuman(room, { triggerText: msg.text });
-      }
+      schedulePoliceReportResponses(room);
     } else if (hasBots(room) && !player.isBot) {
       scheduleBotReplyToHuman(room, { triggerText: msg.text });
     }
