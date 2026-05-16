@@ -1270,9 +1270,13 @@ function renderActionPanel() {
     }
     if (state.myRole === ROLE.POLICE && !state.policeResolved) {
       addConfirmBtn(btns, '마피아 조사', () => emitNightAction('policeInvestigate'));
+      if (selectedTargetId) {
+        const t = state.players.find((p) => p.id === selectedTargetId);
+        if (t) hint.textContent = `${t.nickname} 선택됨 — 「마피아 조사」를 눌러 조사를 확정하세요.`;
+      }
     }
     if (state.myRole === ROLE.POLICE && state.policeResolved) {
-      hint.textContent = '이번 밤 조사를 완료했습니다.';
+      hint.textContent = '이번 밤 조사를 완료했습니다. 낮에 경조결·조결로 결과를 공개할 수 있습니다.';
     }
     if (state.myRole === ROLE.DOCTOR) addConfirmBtn(btns, '치료', () => emitNightAction('doctorHeal'));
     if (state.myRole === ROLE.MEDIUM) {
@@ -1404,6 +1408,7 @@ function onPlayerCardClick(id) {
   }
   if (player && state.phase === 'night') {
     showToast(`${player.nickname} 선택됨`);
+    renderActionPanel();
   }
 }
 
