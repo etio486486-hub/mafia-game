@@ -1245,16 +1245,24 @@ function renderActionPanel() {
       ? (state.myRole === ROLE.MEDIUM ? '사망자를 선택한 뒤 성불하세요.' : '플레이어를 선택한 뒤 능력을 사용하세요.')
       : '이 밤에는 사용할 능력이 없습니다.';
     if (state.myRole === ROLE.MAFIA) {
-      addConfirmBtn(btns, '암살 투표', () => emitNightAction('mafiaVote'));
+      addConfirmBtn(btns, '암살 투표 (밤 살해)', () => emitNightAction('mafiaVote'));
       const mates = state.players.filter(pl => pl.isMafiaTeammate);
       const mateCount = mates.length + 1;
-      if (mateCount >= 2) {
-        hint.textContent = `팀 ${mateCount}명 — 살해하려면 같은 사람을 지목하세요. (봇 동료는 당신 표를 따릅니다) 동료: ${mates.map(m => m.nickname).join(', ')}`;
-      } else if (mates.length) {
-        hint.textContent = `팀 동료: ${mates.map(m => m.nickname).join(', ')} — 마피아 채팅·암살 표를 맞추세요.`;
+      const voted = state.myMafiaKillTarget
+        ? state.players.find((p) => p.id === state.myMafiaKillTarget)
+        : null;
+      if (voted) {
+        hint.textContent = `${voted.nickname}님에게 암살 투표함 · 밤이 끝나면 살해 처리됩니다.`;
+      } else if (state.mafiaKillStatus === 'need_all_votes') {
+        hint.textContent = `마피아 ${mateCount}명 — 모두 같은 사람에 「암살 투표」해야 합니다. (낮 처형 투표와 다름)`;
+      } else if (mateCount >= 2) {
+        hint.textContent = `대상 선택 → 「암살 투표」. 봇 동료는 당신 표를 따릅니다. 동료: ${mates.map(m => m.nickname).join(', ')}`;
       } else {
-        hint.textContent = '단독 마피아입니다. 마피아 채팅은 본인만 볼 수 있습니다.';
+        hint.textContent = '대상 선택 → 「암살 투표」를 눌러야 밤에 살해합니다. (낮 투표만으로는 죽지 않음)';
       }
+    }
+    if (state.myRole === ROLE.SPY && state.joinedMafiaChat) {
+      hint.textContent = '스파이는 밤에 살해할 수 없습니다. 「직업 조사」만 가능합니다. 살해는 마피아 동료가 합니다.';
     }
     if (state.joinedMafiaChat && state.myRole === ROLE.SPY) {
       const mates = state.players.filter(pl => pl.isMafiaTeammate);
@@ -1366,6 +1374,9 @@ function emitNightAction(event) {
   };
   const fx = animMap[event];
   if (fx) runAnimation(fx.anim, { targetId: selectedTargetId, cardFx: fx.cardFx });
+  if (event === 'mafiaVote') {
+    showToast('암살 투표 완료. 밤이 끝나야 실제로 살해 처리됩니다.');
+  }
 }
 
 function countDeadPlayers() {
@@ -1580,9 +1591,10 @@ function appendPrivateInfo(data) {
       break;
     case 'inherit': line = `도굴꾼 계승: ${data.fromName}의 ${data.roleLabel}`; break;
     case 'actionConfirm':
-      line = data.targetName
-        ? `${actionLabels[data.action] || '능력'} 대상: ${data.targetName}`
-        : '능력 대상 선택됨';
+      line = data.message
+        || (data.targetName
+          ? `${actionLabels[data.action] || '능력'} 대상: ${data.targetName}`
+          : '능력 대상 선택됨');
       break;
     default: line = JSON.stringify(data);
   }
