@@ -9,6 +9,7 @@ const botBrain = require('./lib/bot-brain');
 const voteFacts = require('./lib/bot-vote-facts');
 const voteIntel = require('./lib/bot-vote-intel');
 const botChatFilter = require('./lib/bot-chat-filter');
+const m42Bluff = require('./lib/m42-bluff');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -266,7 +267,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-15d',
+    stability: '2026-05-15e',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -854,6 +855,7 @@ function postPolicePublicReport(room, policeIdOptional, opts = {}) {
   notePublicPoliceClaim(room, report.police.id);
   voteIntel.publishPoliceIntelToPublic(room);
   console.log(`[POLICE] public report by ${report.police.nickname} intel=true`);
+  scheduleMafiaMatgyeongAfterReport(room, report.police.id);
 }
 
 function notifyPoliceNoIntel(room, police) {
@@ -910,6 +912,46 @@ function replyBotPoliceReport(room, policeBot) {
     ? report.text
     : '조결 요청 확인했습니다. 이번 밤 수사 기록이 없습니다. 밤에 대상을 지목해 주시면 낮에 조결로 말씀드리겠습니다.';
   postBotDayMessage(room, policeBot, text);
+  scheduleMafiaMatgyeongAfterReport(room, policeBot.id);
+}
+
+/** 홀경 조결 직후 마피아 봇이 맞경(둘째 경찰) 주장 */
+function scheduleMafiaMatgyeongAfterReport(room, reporterId) {
+  if (!room.game || room.phase !== PHASE.DAY_CHAT || !reporterId) return;
+  if (!hasBots(room)) return;
+
+  const reporter = getPlayerById(room, reporterId);
+  if (!reporter || !reporter.alive) return;
+
+  const mafiaBots = getBots(room).filter(
+    (b) => b.alive && isMafiaTeam(b.role) && b.id !== reporterId && b.role !== ROLE.POLICE
+  );
+  if (!mafiaBots.length) return;
+
+  const bluffer = mafiaBots[Math.floor(Math.random() * mafiaBots.length)];
+  const delay = 500 + Math.floor(Math.random() * 700);
+  scheduleRoomTask(room, () => {
+    if (room.phase !== PHASE.DAY_CHAT) return;
+    const text = m42Bluff.buildMatgyeongCounterClaim(room, bluffer, voteFactHelpers);
+    if (text) postBotDayMessage(room, bluffer, text);
+  }, delay);
+}
+
+/** 낮 시작 직후 마피아가 먼저 경찰 직공 → 진경이 나중에 말하면 맞경 */
+function scheduleMafiaEarlyPoliceBluff(room) {
+  if (!room.game || room.phase !== PHASE.DAY_CHAT || !hasBots(room)) return;
+  const mafiaBots = getBots(room).filter((b) => b.alive && isMafiaTeam(b.role) && b.role !== ROLE.POLICE);
+  if (!mafiaBots.length) return;
+  const bluffer = mafiaBots[Math.floor(Math.random() * mafiaBots.length)];
+  scheduleRoomTask(room, () => {
+    if (room.phase !== PHASE.DAY_CHAT) return;
+    const reporters = m42Bluff.scanPoliceReporters(room, voteFactHelpers);
+    if (reporters.length >= 2) return;
+    const text = reporters.length === 0
+      ? m42Bluff.buildBluffOpenLine('police', bluffer, room)
+      : m42Bluff.buildMatgyeongCounterClaim(room, bluffer, voteFactHelpers);
+    if (text) postBotDayMessage(room, bluffer, text);
+  }, 1200 + Math.floor(Math.random() * 800));
 }
 
 /** 누가 요청해도 생존 경찰(사람·봇)이 조결 응답 */
@@ -1381,7 +1423,10 @@ async function runBotDayChat(room, ctx = {}) {
   try {
     let bot;
     const trigger = ctx.triggerText || '';
-    if (ctx.policeReport && isPoliceReportRequest(trigger)) {
+    if (m42Bluff.wantsMatgyeongAsk(trigger)) {
+      const mafiaBots = bots.filter((b) => isMafiaTeam(b.role) && b.role !== ROLE.POLICE);
+      bot = mafiaBots.length ? shuffle(mafiaBots)[0] : shuffle(bots)[0];
+    } else if (ctx.policeReport && isPoliceReportRequest(trigger)) {
       bot = bots.find((p) => p.role === ROLE.POLICE)
         || bots.find((p) => p.role !== ROLE.POLICE);
     } else {
@@ -2341,6 +2386,7 @@ function startDayChat(room) {
   setPhase(room, PHASE.DAY_CHAT, debateMs);
   scheduleBotDawnSkillReactions(room);
   scheduleBotDayChat(room);
+  scheduleMafiaEarlyPoliceBluff(room);
   scheduleRoomTask(room, () => {
     const policeBot = Object.values(room.players).find(
       (p) => p.role === ROLE.POLICE && p.alive && p.isBot
