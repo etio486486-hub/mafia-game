@@ -793,7 +793,23 @@ function showVoteResultsOverlay(data) {
   hideVoteTimeOverlay();
   const overlay = $('#vote-results-overlay');
   const list = $('#vote-results-list');
+  const titleEl = overlay ? overlay.querySelector('.vote-results-title') : null;
   if (!overlay || !list || !data) return;
+
+  if (titleEl) {
+    if (data.tie) {
+      titleEl.textContent = '투표 결과 — 동점 (처형 없음)';
+    } else if (data.noVotes) {
+      titleEl.textContent = '투표 결과 — 무투표 (처형 없음)';
+    } else if (data.topCandidateId) {
+      const top = (data.rows || []).find((r) => r.playerId === data.topCandidateId);
+      titleEl.textContent = top
+        ? `투표 결과 — ${top.nickname}님 최다 득표 (찬반 투표 진행)`
+        : '투표 결과';
+    } else {
+      titleEl.textContent = '투표 결과';
+    }
+  }
 
   list.innerHTML = (data.rows || []).map((row) => {
     const marks = Array.from({ length: row.votes }, () => '<span class="vote-tally-mark"></span>').join('');

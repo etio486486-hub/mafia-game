@@ -266,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14o',
+    stability: '2026-05-14p',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -640,6 +640,13 @@ function isRoleClaimRequest(text) {
   return /직공|직업공개|직업ㄱㅇ|홀경|홀의|홀군|직적/.test(c);
 }
 
+function isRoleRollCallQuestion(text) {
+  if (!text) return false;
+  const c = String(text).replace(/\s+/g, '').toLowerCase();
+  return /각자직업|직업뭐|직업이뭐|직업다|직업말|직업알려|직업공개|다들직업|직업좀|직업해봐|직업말해|무슨직업|직업이뭔|직업이/.test(c)
+    || /직업/.test(c) && /(뭐|무엇|말|공개|알려|해봐|해줘|각자|다들)/.test(c);
+}
+
 function isSelfVoteRequest(text) {
   if (!text) return false;
   const c = String(text).replace(/\s+/g, '');
@@ -987,6 +994,7 @@ botBrain.configure({
   isPoliceReportRequest,
   buildPolicePublicReport,
   isRoleClaimRequest,
+  isRoleRollCallQuestion,
   isSelfVoteRequest
 });
 
@@ -2458,12 +2466,17 @@ function proceedDayVoteAfterResults(room, results) {
 
   if (topCandidates.length !== 1) {
     console.log(`[DAY VOTE] tie or no votes - skipping execution (candidates=${topCandidates.length})`);
+    room.game.pendingAnnouncements = [
+      results.tie
+        ? '낮 투표가 동점이어서 처형 후보가 없습니다.'
+        : '낮 투표가 없어 처형 후보가 없습니다.'
+    ];
     emitMotion(room, {
       type: 'vote_tie',
-      title: '투표 부결',
+      title: '낮 투표 무효',
       message: results.tie
-        ? '처형될 사람을 찾지 못하였습니다. (동점)'
-        : '처형될 사람을 찾지 못하였습니다.',
+        ? '최다 득표가 동점입니다. 처형 후보가 없습니다.'
+        : '투표가 없습니다. 처형 후보가 없습니다.',
       situation: '[상황] 낮 투표에서 최다 득표자가 없거나 동점인 경우'
     });
     broadcastState(room);
@@ -2524,26 +2537,27 @@ function resolveExecutionVote(room) {
     else no++;
   }
 
-  const executed = yes >= no && yes > 0;
+  const executed = yes > no && yes > 0;
 
   console.log(`[EXECUTION] candidate=${candidate.nickname} yes=${yes} no=${no} (미투표=반대) -> ${executed ? 'EXECUTED' : 'SPARED'}`);
 
   if (executed) {
     markPlayerDead(room, candidate);
-    room.game.pendingAnnouncements = [`${candidate.nickname}님이 처형되었습니다.`];
+    room.game.pendingAnnouncements = [`${candidate.nickname}님이 찬반 투표로 처형되었습니다.`];
     emitMotion(room, {
       type: 'vote_execution',
       title: '투표 처형',
-      message: `${candidate.nickname}님이 투표로 처형당하였습니다.`,
-      situation: '[상황] 찬성 과반으로 처형이 확정된 경우'
+      message: `${candidate.nickname}님이 찬반 투표로 처형되었습니다.`,
+      situation: '[상황] 찬성이 반대보다 많아 처형이 확정된 경우'
     });
     broadcastAnimation(room, 'anim-mafia-kill');
   } else {
+    room.game.pendingAnnouncements = [`${candidate.nickname}님의 찬반 처형이 부결되었습니다.`];
     emitMotion(room, {
       type: 'vote_rejected',
-      title: '투표 부결',
-      message: `${candidate.nickname} 님의 처형이 부결되었습니다.`,
-      situation: '[상황] 찬성이 과반에 미달한 경우'
+      title: '찬반 부결',
+      message: `${candidate.nickname}님의 처형이 부결되었습니다. (찬성 ${yes} · 반대 ${no})`,
+      situation: '[상황] 찬성이 반대보다 많지 않아 처형되지 않은 경우'
     });
   }
 
