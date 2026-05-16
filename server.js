@@ -10,6 +10,7 @@ const voteFacts = require('./lib/bot-vote-facts');
 const voteIntel = require('./lib/bot-vote-intel');
 const botChatFilter = require('./lib/bot-chat-filter');
 const m42Bluff = require('./lib/m42-bluff');
+const policeFmt = require('./lib/police-report-format');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -267,7 +268,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-15j',
+    stability: '2026-05-15m',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -511,7 +512,16 @@ function resetBotChatStats(room) {
 }
 
 function canBotChatNow(room) {
-  if (!room || !room.game || room.botChatInFlight) return false;
+  if (!room || !room.game) return false;
+  if (room.botChatInFlight) {
+    const started = room._botChatStartedAt || 0;
+    if (started && Date.now() - started > 12000) {
+      console.warn(`[BOT] reset stuck botChatInFlight room=${room.code}`);
+      room.botChatInFlight = false;
+    } else {
+      return false;
+    }
+  }
   const st = room.game.botChatStats || { count: 0, lastAt: 0 };
   room.game.botChatStats = st;
   const now = Date.now();
@@ -543,6 +553,42 @@ function canEmitRoomEvent(room, kind = 'general') {
   return true;
 }
 
+const VOTE_RESULTS_DISPLAY_MS = 4500;
+
+function clearDayVoteResultsTimer(room) {
+  if (!room) return;
+  if (room._dayVoteResultsTimer) {
+    clearTimeout(room._dayVoteResultsTimer);
+    room._dayVoteResultsTimer = null;
+  }
+  if (room._dayVoteWatchdogTimer) {
+    clearTimeout(room._dayVoteWatchdogTimer);
+    room._dayVoteWatchdogTimer = null;
+  }
+}
+
+function scheduleDayVoteResolveWatchdog(room) {
+  if (!room) return;
+  if (room._dayVoteWatchdogTimer) clearTimeout(room._dayVoteWatchdogTimer);
+  room._dayVoteWatchdogTimer = setTimeout(() => {
+    room._dayVoteWatchdogTimer = null;
+    if (!room.resolvingDayVote || room.phase !== PHASE.DAY_VOTE) return;
+    console.warn(`[ROOM ${room.code}] day vote watchdog — force finish`);
+    finishDayVoteResolve(room);
+  }, VOTE_RESULTS_DISPLAY_MS + 5000);
+}
+
+function finishDayVoteResolve(room) {
+  if (!room) return;
+  clearDayVoteResultsTimer(room);
+  room.resolvingDayVote = false;
+  room._dayVoteResolveAt = null;
+  const results = room._voteResultsPayload || (room.game ? buildDayVoteResults(room) : null);
+  room._voteResultsPayload = null;
+  if (!results || !isActiveGame(room) || room.phase !== PHASE.DAY_VOTE) return;
+  proceedDayVoteAfterResults(room, results);
+}
+
 function bumpRoomTaskGeneration(room) {
   if (!room) return;
   if (room._broadcastStateTimer) {
@@ -550,9 +596,9 @@ function bumpRoomTaskGeneration(room) {
     room._broadcastStateTimer = null;
   }
   clearBotChatTimers(room);
+  clearDayVoteResultsTimer(room);
   room.taskGeneration = (room.taskGeneration || 0) + 1;
   room.botActionGeneration = (room.botActionGeneration || 0) + 1;
-  room.resolvingDayVote = false;
 }
 
 function scheduleRoomTask(room, fn, delayMs) {
@@ -807,22 +853,21 @@ function buildPolicePublicReport(room, policeIdOptional) {
     };
   }
 
-  const parts = [];
+  const entries = [];
   for (const row of intel) {
     const t = getPlayerById(room, row.targetId);
     const name = (t && t.nickname) || row.targetName;
     if (!name || String(name).trim() === '?' || String(name).trim() === '') continue;
-    if (row.isMafia) parts.push(`${name}님은 마피아입니다`);
-    else parts.push(`${name}님은 마피아가 아닙니다`);
+    entries.push({ name, isMafia: !!row.isMafia });
   }
-  if (!parts.length) {
+  if (!entries.length) {
     return { police, hasIntel: false, text: null };
   }
 
   return {
     police,
     hasIntel: true,
-    text: `수사 결과입니다. ${parts.join('. ')}.`
+    text: policeFmt.formatPoliceReportLines(entries)
   };
 }
 
@@ -950,7 +995,7 @@ function scheduleMafiaMatgyeongAfterReport(room, reporterId) {
 function scheduleMafiaHolgyeongOnReportRequest(room) {
   if (!room.game || room.phase !== PHASE.DAY_CHAT || !hasBots(room)) return;
   const hasReport = getDayMessages(room).some(
-    (m) => m && m.text && /수사\s*결과/.test(m.text)
+    (m) => m && m.text && policeFmt.looksLikePoliceReport(m.text)
   );
   if (hasReport) return;
 
@@ -1223,6 +1268,12 @@ function pickBotDayVoteTarget(room, bot) {
 
   const alive = getAlivePlayers(room).filter((p) => p.id !== bot.id);
   if (alive.length === 1) return alive[0].id;
+  if (alive.length > 1) {
+    const scores = buildSuspicionScores(room, bot);
+    alive.sort((a, b) => (scores[b.id] || 0) - (scores[a.id] || 0));
+    if ((scores[alive[0].id] || 0) >= 1) return alive[0].id;
+    return alive[Math.floor(Math.random() * alive.length)].id;
+  }
 
   return null;
 }
@@ -1437,7 +1488,10 @@ function runBotDayVotes(room) {
 
 function scheduleBotDayVotes(room) {
   if (!hasBots(room)) return;
-  scheduleRoomTask(room, () => runBotDayVotes(room), 5000);
+  runBotDayVotes(room);
+  [2500, 7000, 11000].forEach((ms) => {
+    scheduleRoomTask(room, () => runBotDayVotes(room), ms);
+  });
 }
 
 function postBotDayMessage(room, bot, text) {
@@ -1450,9 +1504,9 @@ function postBotDayMessage(room, bot, text) {
   if (safe !== text) {
     console.warn(`[BOT] filtered chat from ${bot.nickname}`);
   }
-  text = safe;
+  text = policeFmt.rewriteFormalPoliceReport(text);
   const msg = { from: bot.nickname, fromId: bot.id, text, time: Date.now() };
-  if (/수사\s*결과/.test(text) || isPoliceSelfClaim(text) || (bot.role === ROLE.POLICE && /수사\s*결과/.test(text))) {
+  if (policeFmt.looksLikePoliceReport(text) || isPoliceSelfClaim(text)) {
     notePublicPoliceClaim(room, bot.id);
     voteIntel.ingestPoliceReportsFromDayChat(room, voteFactHelpers);
   }
@@ -1470,6 +1524,7 @@ async function runBotDayChat(room, ctx = {}) {
   if (!bots.length) return;
 
   room.botChatInFlight = true;
+  room._botChatStartedAt = Date.now();
   try {
     let bot;
     const trigger = ctx.triggerText || '';
@@ -1486,11 +1541,21 @@ async function runBotDayChat(room, ctx = {}) {
     } else {
       bot = shuffle(bots)[0];
     }
-    const text = await botBrain.generateBotChat(room, bot, ctx);
-    if (!text) return;
+    const text = await Promise.race([
+      botBrain.generateBotChat(room, bot, ctx),
+      new Promise((resolve) => setTimeout(() => resolve(null), 9000))
+    ]);
+    if (!text) {
+      const fallback = botBrain.generateRuleBased
+        ? botBrain.generateRuleBased(room, bot, ctx)
+        : null;
+      if (fallback) postBotDayMessage(room, bot, fallback);
+      return;
+    }
     postBotDayMessage(room, bot, text);
   } catch (err) {
     console.warn('[BOT] day-chat error', err.message);
+    room.botChatInFlight = false;
   } finally {
     room.botChatInFlight = false;
   }
@@ -2294,8 +2359,18 @@ function scheduleBotActions(room, durationMs) {
 
 function ensurePhaseTimer(room) {
   if (!room || !room.phaseEndsAt || room.phase === PHASE.LOBBY || room.phase === PHASE.GAME_OVER) return;
-  if (room.phaseTimer || room.phaseAdvancing || room.resolvingDayVote) return;
   if (room.game && room.game.winner) return;
+
+  if (room.resolvingDayVote) {
+    const stuckMs = room._dayVoteResolveAt ? Date.now() - room._dayVoteResolveAt : 99999;
+    if (stuckMs > VOTE_RESULTS_DISPLAY_MS + 4000) {
+      console.warn(`[ROOM ${room.code}] day vote resolve stuck ${stuckMs}ms — recover`);
+      finishDayVoteResolve(room);
+    }
+    return;
+  }
+
+  if (room.phaseTimer || room.phaseAdvancing) return;
   const remaining = room.phaseEndsAt - Date.now();
   if (remaining <= 0) {
     onPhaseTimeout(room);
@@ -2309,14 +2384,20 @@ function clearPhaseTimer(room) {
     clearTimeout(room.phaseTimer);
     room.phaseTimer = null;
   }
+  clearDayVoteResultsTimer(room);
 }
 
 function setPhase(room, phase, durationMs) {
   clearPhaseTimer(room);
+  clearDayVoteResultsTimer(room);
+  room.resolvingDayVote = false;
+  room._dayVoteResolveAt = null;
+  room._voteResultsPayload = null;
   bumpRoomTaskGeneration(room);
   room.botActionGeneration = (room.botActionGeneration || 0) + 1;
   room.phase = phase;
   room.botChatInFlight = false;
+  if (phase === PHASE.DAY_CHAT && room.game) resetBotChatStats(room);
   room.phaseEndsAt = durationMs ? Date.now() + durationMs : null;
   if (phase === PHASE.LAST_WORDS) room.botLastWordsSent = false;
 
@@ -2875,8 +2956,6 @@ function resolveNight(room) {
   startDawn(room);
 }
 
-const VOTE_RESULTS_DISPLAY_MS = 4500;
-
 function buildDayVoteResults(room) {
   const votes = room.game.dayVotes;
   const tally = buildDayVoteTally(room);
@@ -2948,18 +3027,25 @@ function proceedDayVoteAfterResults(room, results) {
 }
 
 function resolveDayVote(room) {
-  if (room.resolvingDayVote) return;
   if (!isActiveGame(room)) return;
-  room.resolvingDayVote = true;
+  if (room.resolvingDayVote) {
+    if (room._dayVoteResultsTimer) return;
+    const stuckMs = room._dayVoteResolveAt ? Date.now() - room._dayVoteResolveAt : 0;
+    if (stuckMs < VOTE_RESULTS_DISPLAY_MS + 4000) return;
+    console.warn(`[ROOM ${room.code}] forcing day vote resolve`);
+    finishDayVoteResolve(room);
+    return;
+  }
 
+  room.resolvingDayVote = true;
+  room._dayVoteResolveAt = Date.now();
   const results = buildDayVoteResults(room);
+  room._voteResultsPayload = results;
   broadcastToRoom(room, 'dayVoteResults', results);
 
-  scheduleRoomTask(room, () => {
-    room.resolvingDayVote = false;
-    if (!isActiveGame(room) || room.phase !== PHASE.DAY_VOTE) return;
-    proceedDayVoteAfterResults(room, results);
-  }, VOTE_RESULTS_DISPLAY_MS);
+  clearDayVoteResultsTimer(room);
+  room._dayVoteResultsTimer = setTimeout(() => finishDayVoteResolve(room), VOTE_RESULTS_DISPLAY_MS);
+  scheduleDayVoteResolveWatchdog(room);
 }
 
 function resolveExecutionVote(room) {
@@ -3450,7 +3536,11 @@ function handleChat(room, socket, channel, text) {
   if (!room || !text || !String(text).trim()) return;
   const player = getViewer(room, socket);
   if (!player) return;
-  const msg = { from: player.nickname, fromId: player.id, text: String(text).trim(), time: Date.now() };
+  let msgText = String(text).trim();
+  if (channel === 'day') {
+    msgText = policeFmt.rewriteFormalPoliceReport(msgText);
+  }
+  const msg = { from: player.nickname, fromId: player.id, text: msgText, time: Date.now() };
 
   if (channel === 'lobby') {
     if (room.phase !== PHASE.LOBBY) return reject(socket, '로비에서만 사용할 수 있습니다.');
