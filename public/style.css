@@ -3073,6 +3073,34 @@ body.phase-night .m42-banner-main {
   border-color: rgba(62, 207, 142, 0.35);
 }
 
+.m42-player-grid .player-card.mafia-teammate {
+  border-color: rgba(220, 70, 70, 0.85);
+  box-shadow: 0 0 0 1px rgba(220, 70, 70, 0.5), 0 4px 14px rgba(180, 40, 40, 0.25);
+}
+
+.m42-player-grid .player-card.mafia-teammate .slot-avatar {
+  border-color: rgba(220, 70, 70, 0.55);
+}
+
+.m42-player-grid .player-card .slot-team-badge {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  padding: 2px 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-align: center;
+  border-radius: 4px;
+  background: rgba(180, 40, 40, 0.35);
+  color: #ffb4b4;
+  border: 1px solid rgba(220, 70, 70, 0.5);
+}
+
+.m42-player-grid .player-card .slot-team-badge.role-mafia,
+.m42-player-grid .player-card .slot-team-badge.role-spy {
+  background: rgba(140, 30, 30, 0.45);
+}
+
 .phase-transition-overlay,
 .role-reveal-overlay,
 .reporter-reveal-overlay {

@@ -266,7 +266,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-14r',
+    stability: '2026-05-14s',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -344,6 +344,45 @@ function isMafiaTeam(role) {
 
 function isMafiaRole(role) {
   return role === ROLE.MAFIA;
+}
+
+/** 마피아 채팅·팀 표시 권한 (마피아 또는 접선한 스파이) */
+function viewerOnMafiaSide(viewer) {
+  if (!viewer || !viewer.alive) return false;
+  return viewer.role === ROLE.MAFIA || viewer.joinedMafiaChat;
+}
+
+/** 시청자에게 보이는 마피아 팀 동료 (본인 제외) */
+function isVisibleMafiaAlly(viewer, target) {
+  if (!viewer || !target || target.id === viewer.id) return false;
+  if (!viewerOnMafiaSide(viewer)) return false;
+  if (isMafiaRole(target.role)) return true;
+  return target.role === ROLE.SPY && target.joinedMafiaChat;
+}
+
+function getMafiaTeammatesForViewer(room, viewer) {
+  if (!viewerOnMafiaSide(viewer)) return [];
+  return Object.values(room.players).filter(p => isVisibleMafiaAlly(viewer, p));
+}
+
+function emitMafiaTeamInfo(room, viewer) {
+  if (!viewer) return;
+  const teammates = getMafiaTeammatesForViewer(room, viewer).map(p => ({
+    id: p.id,
+    nickname: p.nickname,
+    role: p.role,
+    roleLabel: ROLE_LABELS[p.role]
+  }));
+  const sess = sessions.get(viewer.userID);
+  if (sess && sess.socketId) {
+    io.to(sess.socketId).emit('privateInfo', { type: 'mafiaTeam', teammates });
+  }
+}
+
+function emitMafiaTeamInfoToAll(room) {
+  for (const p of Object.values(room.players)) {
+    emitMafiaTeamInfo(room, p);
+  }
 }
 
 function getAlivePlayers(room) {
@@ -1636,6 +1675,14 @@ function toClientState(room, viewerUserId, opts = {}) {
     if (p.id === viewerId) {
       return { ...base, role: p.role, roleLabel: ROLE_LABELS[p.role] };
     }
+    if (viewer && isVisibleMafiaAlly(viewer, p)) {
+      return {
+        ...base,
+        isMafiaTeammate: true,
+        role: p.role,
+        roleLabel: ROLE_LABELS[p.role]
+      };
+    }
     return base;
   });
 
@@ -1795,6 +1842,12 @@ function deliverSpyResult(room, spy, targetId) {
   const resultRole = target.role;
   const isMafia = isMafiaRole(resultRole);
   if (isMafia) spy.joinedMafiaChat = true;
+  if (isMafia) {
+    emitMafiaTeamInfo(room, spy);
+    for (const p of Object.values(room.players)) {
+      if (isMafiaRole(p.role)) emitMafiaTeamInfo(room, p);
+    }
+  }
   emitMotionToUser(spy.userID, isMafia ? {
     type: 'spy_contact',
     title: '스파이 접선',
@@ -2405,8 +2458,9 @@ function resolveNight(room) {
     if (graverobber && victim) {
       const oldRole = graverobber.role;
       graverobber.role = victim.role;
-      graverobber.joinedMafiaChat = isMafiaRole(victim.role) ? false : graverobber.joinedMafiaChat;
-      if (victim.role === ROLE.SPY) graverobber.joinedMafiaChat = true;
+      if (victim.role === ROLE.MAFIA) graverobber.joinedMafiaChat = true;
+      else if (victim.role === ROLE.SPY) graverobber.joinedMafiaChat = !!victim.joinedMafiaChat;
+      else graverobber.joinedMafiaChat = false;
       g.graverobberInherited = true;
       console.log(`[NIGHT][5-Graverobber] ${graverobber.nickname} inherits ${ROLE_LABELS[victim.role]} from ${victim.nickname} (was ${ROLE_LABELS[oldRole]})`);
       emitMotionToUser(graverobber.userID, {
@@ -2422,6 +2476,7 @@ function resolveNight(room) {
           fromName: victim.nickname
         });
       }
+      if (viewerOnMafiaSide(graverobber)) emitMafiaTeamInfo(room, graverobber);
     }
   }
 
@@ -2824,6 +2879,7 @@ function reconnectPlayer(socket, room, player) {
   socket.join(room.code);
   if (player.role) {
     socket.emit('privateInfo', { type: 'role', role: player.role, roleLabel: ROLE_LABELS[player.role] });
+    emitMafiaTeamInfo(room, player);
   }
   socket.emit('stateSync', toClientState(room, socket.userID, { includeChat: true }));
   socket.emit('joinResult', { ok: true, resumed: true });
@@ -3170,6 +3226,7 @@ io.on('connection', (socket) => {
         });
       }
     }
+    emitMafiaTeamInfoToAll(room);
     startNight(room);
   });
 

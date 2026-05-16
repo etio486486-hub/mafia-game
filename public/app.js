@@ -1003,8 +1003,36 @@ function showRoleReveal(role) {
   card.innerHTML =
     buildRolePortraitHtml(role) +
     `<div class="role-reveal-title">${g.name} · ${g.team}</div>`;
-  desc.textContent = g.desc;
+  let descText = g.desc;
+  if (role === ROLE.MAFIA && state && state.players) {
+    const mates = state.players.filter(p => p.isMafiaTeammate);
+    if (mates.length) {
+      descText += `\n\n팀 동료: ${mates.map(m => m.nickname).join(', ')} (플레이어 목록에 빨간 테두리)`;
+    }
+  }
+  desc.textContent = descText;
   overlay.hidden = false;
+}
+
+function formatMafiaTeammateList(teammates) {
+  if (!teammates || !teammates.length) return '';
+  return teammates.map(t => `${t.nickname}(${t.roleLabel || '팀'})`).join(', ');
+}
+
+function showMafiaTeamNotice(teammates) {
+  if (!state) return;
+  const onMafiaSide = state.myRole === ROLE.MAFIA || state.joinedMafiaChat;
+  if (!onMafiaSide) return;
+  const list = teammates
+    ? formatMafiaTeammateList(teammates)
+    : formatMafiaTeammateList(
+      state.players.filter(p => p.isMafiaTeammate).map(p => ({ nickname: p.nickname, roleLabel: p.roleLabel }))
+    );
+  setTimeout(() => {
+    showToast(list
+      ? `마피아 팀 동료: ${list}`
+      : '마피아 팀: 현재 본인만입니다. (다른 마피아가 없을 수 있음)');
+  }, 900);
 }
 
 function closeRoleReveal() {
@@ -1125,20 +1153,26 @@ function renderPlayerGrid() {
     if (isCandidate) cls += ' candidate';
     if (isSelf) cls += ' is-self';
     if (note.guessedRole) cls += ' has-guess';
+    const isTeammate = !isSelf && p.isMafiaTeammate;
+    if (isTeammate) cls += ' mafia-teammate';
 
     let status = isDead ? '사망' : (p.connected ? '' : '재연결');
     if (isCandidate) status = '처형 후보';
+    if (isTeammate) status = status || '팀';
 
-    const showRoleImg = isSelf && state.myRole;
+    const teammateRole = isTeammate ? p.role : null;
+    const showRoleImg = (isSelf && state.myRole) || teammateRole;
     const avatarInner = showRoleImg
-      ? buildRolePortraitHtml(state.myRole)
+      ? buildRolePortraitHtml(isSelf ? state.myRole : teammateRole)
       : (note.guessedRole
         ? `<img src="${rolePortraitUrl(note.guessedRole)}" alt="${guessedLabel}" loading="lazy" onerror="this.replaceWith(document.createElement('span')).textContent='?'">`
         : '?');
 
-    const guessHtml = guessedLabel
-      ? `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(guessedLabel)}</button>`
-      : `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`;
+    const guessHtml = isTeammate
+      ? `<span class="slot-team-badge role-${p.role}" title="마피아 팀">${escapeHtml(p.roleLabel || '팀')}</span>`
+      : (guessedLabel
+        ? `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(guessedLabel)}</button>`
+        : `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`);
 
     const canSelect = canSelectPlayerSlot(p);
     if (state.myDayVoteTarget === p.id) cls += ' voted';
@@ -1210,7 +1244,21 @@ function renderActionPanel() {
     hint.textContent = canSelectActionTarget()
       ? (state.myRole === ROLE.MEDIUM ? '사망자를 선택한 뒤 성불하세요.' : '플레이어를 선택한 뒤 능력을 사용하세요.')
       : '이 밤에는 사용할 능력이 없습니다.';
-    if (state.myRole === ROLE.MAFIA) addConfirmBtn(btns, '암살 투표', () => emitNightAction('mafiaVote'));
+    if (state.myRole === ROLE.MAFIA) {
+      addConfirmBtn(btns, '암살 투표', () => emitNightAction('mafiaVote'));
+      const mates = state.players.filter(pl => pl.isMafiaTeammate);
+      if (mates.length) {
+        hint.textContent = `팀 동료: ${mates.map(m => m.nickname).join(', ')} — 마피아 채팅·암살 표를 맞추세요.`;
+      } else {
+        hint.textContent = '단독 마피아입니다. 마피아 채팅은 본인만 볼 수 있습니다.';
+      }
+    }
+    if (state.joinedMafiaChat && state.myRole === ROLE.SPY) {
+      const mates = state.players.filter(pl => pl.isMafiaTeammate);
+      if (mates.length) {
+        hint.textContent = `접선한 마피아 팀: ${mates.map(m => m.nickname).join(', ')}`;
+      }
+    }
     if (state.myRole === ROLE.SPY) addConfirmBtn(btns, '직업 조사', () => emitNightAction('spyInvestigate'));
     if (state.myRole === ROLE.POLICE) addConfirmBtn(btns, '마피아 조사', () => emitNightAction('policeInvestigate'));
     if (state.myRole === ROLE.DOCTOR) addConfirmBtn(btns, '치료', () => emitNightAction('doctorHeal'));
@@ -1724,6 +1772,12 @@ socket.on('privateInfo', (data) => {
         : `${data.targetName}님은 마피아가 아닙니다.`
     });
   } else if (data.type === 'spy') {
+    if (data.joinedMafiaChat && state) {
+      state.joinedMafiaChat = true;
+      renderPlayerGrid();
+      renderActionPanel();
+      updateChatTabs();
+    }
     showSkillNotice({
       scope: 'private',
       kind: 'spy',
@@ -1748,6 +1802,11 @@ socket.on('privateInfo', (data) => {
       message: data.targetName
     });
   }
+  if (data.type === 'mafiaTeam') {
+    showMafiaTeamNotice(data.teammates);
+    renderPlayerGrid();
+    renderActionPanel();
+  }
   if (data.type === 'role' || data.type === 'inherit') {
     if (state) {
       state.myRole = data.role;
@@ -1761,6 +1820,7 @@ socket.on('privateInfo', (data) => {
       renderRoleGuide();
       renderActionPanel();
       renderM42Chrome();
+      renderPlayerGrid();
     }
   }
 });
