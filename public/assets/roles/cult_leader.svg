@@ -24,6 +24,6 @@
   <circle cx="175" cy="210" r="8" fill="#e8d48a"/>
   <circle cx="225" cy="210" r="8" fill="#e8d48a"/>
   <path d="M185 248 Q200 262 215 248" stroke="#c9a227" stroke-width="3" fill="none"/>
-  <text x="200" y="420" text-anchor="middle" fill="#c9a227" font-size="36" font-family="serif" font-weight="bold">P�</text>
+  <text x="200" y="420" text-anchor="middle" fill="#c9a227" font-size="36" font-family="serif" font-weight="bold">교주</text>
   <text x="200" y="458" text-anchor="middle" fill="#9a8ab0" font-size="18" font-family="sans-serif">Cult Leader</text>
 </svg>

@@ -289,7 +289,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-18b',
+    stability: '2026-05-18d',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -1216,11 +1216,15 @@ function replyBotPoliceReport(room, policeBot) {
   markPolicePublishedReport(room, policeBot.id);
 }
 
-/** 마피아·교주팀 봇 중 가짜 경찰 조결을 낼 수 있는 대상 */
+/** 마피아·교주팀 봇 중 가짜 경찰 조결을 낼 수 있는 대상 (이미 비경찰 직공으로 고정된 봇 제외) */
 function pickEvilPoliceBluffers(room, excludeIds = []) {
   const ex = new Set(excludeIds || []);
   return getBots(room).filter((b) => {
     if (!b.alive || ex.has(b.id) || b.role === ROLE.POLICE) return false;
+    const fc = getBotMind(room, b.id).fakeClaim;
+    if (fc && fc !== 'police' && fc !== 'mafia' && fc !== 'spy' && fc !== 'cult_leader') {
+      return false;
+    }
     if (isMafiaTeam(b.role)) return true;
     if (isCultMember(b)) return true;
     return false;
@@ -1614,7 +1618,9 @@ botBrain.configure({
   getBotMind,
   getBotFakeClaim: (room, botId) => getBotMind(room, botId).fakeClaim,
   setBotFakeClaim: (room, botId, role) => {
-    getBotMind(room, botId).fakeClaim = role;
+    const mind = getBotMind(room, botId);
+    if (mind.fakeClaim != null && mind.fakeClaim !== role) return;
+    mind.fakeClaim = role;
   },
   isPoliceReportRequest,
   buildPolicePublicReport,
