@@ -1369,7 +1369,9 @@ function renderActionPanel() {
     if (state.myPlayerId === state.executionCandidateId) {
       hint.textContent = '처형 후보자는 찬반 투표에 참여할 수 없습니다.';
     } else if (state.myExecutionVote) {
-      hint.textContent = '찬반 투표를 완료했습니다.';
+      hint.textContent = state.myExecutionVote === 'yes'
+        ? '찬반 투표: 찬성 (처형 찬성)'
+        : '찬반 투표: 반대 (처형 반대)';
     } else {
       hint.textContent = '찬반 투표 팝업에서 선택하세요.';
     }
@@ -1495,11 +1497,21 @@ function dismissGameOverlays() {
   if (typeof clearMotionQueue === 'function') clearMotionQueue();
 }
 
+let pendingExecutionVote = null;
+
 function submitExecutionVote(vote) {
+  if (!state || state.phase !== 'execution_vote') return;
+  if (state.myPlayerId === state.executionCandidateId) return;
+  if (state.myExecutionVote) {
+    showToast(state.myExecutionVote === 'yes' ? '이미 찬성했습니다.' : '이미 반대했습니다.');
+    return;
+  }
+  if (pendingExecutionVote) return;
+  pendingExecutionVote = vote;
   socket.emit('executionVote', { vote });
   runAnimation('anim-execution');
   hideExecutionVoteOverlay();
-  showToast(vote === 'yes' ? '찬성했습니다.' : '반대했습니다.');
+  showToast(vote === 'yes' ? '찬성 제출 중…' : '반대 제출 중…');
 }
 
 function updateChatTabs() {
@@ -1734,6 +1746,15 @@ socket.on('stateSync', (data) => {
     lobby: chatStore.lobby
   };
   state = data;
+  if (pendingExecutionVote && data.myExecutionVote) {
+    const label = data.myExecutionVote === 'yes' ? '찬성' : '반대';
+    if (data.myExecutionVote !== pendingExecutionVote) {
+      showToast(`서버에 ${label}으로 기록되었습니다. (제출과 다를 수 있어 확인해 주세요)`);
+    } else {
+      showToast(`${label}으로 투표했습니다.`);
+    }
+    pendingExecutionVote = null;
+  }
   if (!Array.isArray(data.dayChat) && savedChat.day.length) chatStore.day = savedChat.day;
   if (!Array.isArray(data.mafiaChat) && savedChat.mafia.length) chatStore.mafia = savedChat.mafia;
   if (!Array.isArray(data.cultChat) && savedChat.cult.length) chatStore.cult = savedChat.cult;

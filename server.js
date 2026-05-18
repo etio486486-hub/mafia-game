@@ -271,7 +271,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-15t',
+    stability: '2026-05-15u',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -1322,6 +1322,13 @@ function buildSuspicionScores(room, voter, opts = {}) {
     scores[id] = 0;
   }
 
+  const m42CultBots = require('./lib/m42-cult-bots');
+  if (m42Cult.isCultMember(voter)) {
+    for (const p of aliveOthers) {
+      if (m42CultBots.isCultAlly(room, voter, p)) scores[p.id] = 0;
+    }
+  }
+
   if (!skipBotHumanBias) {
     room._susCache = { voterId: voter.id, at: Date.now(), scores };
   }
@@ -1369,7 +1376,14 @@ function pickBotDayVoteTarget(room, bot) {
   const fallback = voteFacts.pickFallbackDayVoteTarget(room, bot, voteFactHelpers);
   if (fallback && fallback !== bot.id) return fallback;
 
-  const alive = getAlivePlayers(room).filter((p) => p.id !== bot.id);
+  const cleared = voteFacts.getClearedIds(room, bot, voteFactHelpers);
+  const m42CultBots = require('./lib/m42-cult-bots');
+  const alive = getAlivePlayers(room).filter((p) => {
+    if (p.id === bot.id) return false;
+    if (cleared.has(p.id)) return false;
+    if (m42CultBots.isCultAlly(room, bot, p)) return false;
+    return true;
+  });
   if (alive.length === 1) return alive[0].id;
   if (alive.length > 1) {
     const scores = buildSuspicionScores(room, bot);
@@ -3843,6 +3857,7 @@ function recordExecutionVote(room, socket, vote) {
   if (player.id === room.game.executionCandidateId) return reject(socket, '후보자는 투표할 수 없습니다.');
   if (vote !== 'yes' && vote !== 'no') return reject(socket, '잘못된 투표입니다.');
   room.game.executionVotes[player.id] = vote;
+  console.log(`[EXECUTION] vote recorded player=${player.nickname} vote=${vote}`);
   broadcastState(room);
 }
 
