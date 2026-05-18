@@ -289,7 +289,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-17c',
+    stability: '2026-05-17d',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -1171,7 +1171,7 @@ function handlePoliceReportRequest(room, requester) {
     : null;
 
   policeList.forEach((police, i) => {
-    const delay = 400 + i * 500;
+    const delay = 320 + i * (140 + Math.floor(Math.random() * 60));
     if (humanRequester && police.id === humanRequester.id) {
       scheduleRoomTask(room, () => {
         const report = buildPolicePublicReport(room, police.id);
@@ -1253,8 +1253,8 @@ function scheduleMafiaFakeReportsInSync(room, baseDelayMs, opts = {}) {
   const avoidName = reporter ? reporter.nickname : opts.avoidName;
 
   picked.forEach((bluffer, i) => {
-    const stagger = opts.staggerMs != null ? opts.staggerMs : 90;
-    const jitter = Math.floor(Math.random() * (opts.jitterMs != null ? opts.jitterMs : 140));
+    const stagger = opts.staggerMs != null ? opts.staggerMs : 45;
+    const jitter = Math.floor(Math.random() * (opts.jitterMs != null ? opts.jitterMs : 95));
     const delay = Math.max(0, (baseDelayMs || 0) + i * stagger + jitter);
     scheduleRoomTask(room, () => {
       if (room.phase !== PHASE.DAY_CHAT) return;
@@ -1339,7 +1339,7 @@ function schedulePoliceReportResponses(room) {
     return;
   }
   policeList.forEach((police, i) => {
-    const delay = 400 + i * 500;
+    const delay = 320 + i * (140 + Math.floor(Math.random() * 60));
     if (police.isBot) {
       scheduleRoomTask(room, () => replyBotPoliceReport(room, police), delay);
     } else {
@@ -1925,13 +1925,16 @@ function scheduleBotRoleRollCall(room, triggerText, excludeBotId = null) {
   room._rollCallGen = (room._rollCallGen || 0) + 1;
   const gen = room._rollCallGen;
 
-  const bots = shuffle(getBots(room).filter((b) => b.alive && b.id !== excludeBotId));
-  if (!bots.length) return;
+  const shuffled = shuffle(getBots(room).filter((b) => b.alive && b.id !== excludeBotId));
+  if (!shuffled.length) return;
+  const policeBots = shuffled.filter((b) => b.role === ROLE.POLICE);
+  const others = shuffle(shuffled.filter((b) => b.role !== ROLE.POLICE));
+  const bots = [...policeBots, ...others];
 
   console.log(`[BOT] role roll-call: ${bots.length} bots (gen=${gen})`);
 
   bots.forEach((bot, i) => {
-    const delay = 900 + i * (1200 + Math.floor(Math.random() * 500));
+    const delay = 380 + i * (95 + Math.floor(Math.random() * 55));
     scheduleRoomTask(room, () => {
       if (room._rollCallGen !== gen || room.phase !== PHASE.DAY_CHAT) return;
       if (!bot.alive) return;
