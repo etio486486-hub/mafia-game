@@ -288,7 +288,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-15y',
+    stability: '2026-05-15z',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -991,40 +991,65 @@ function buildPolicePublicReport(room, policeIdOptional) {
   };
 }
 
+function notifyPoliceReportDraft(room, police, text) {
+  if (!police || !police.userID) return;
+  emitSkillNotice(police.userID, {
+    scope: 'private',
+    kind: 'police',
+    title: '조사 결과 — 직접 채팅에 올려 주세요',
+    message: text
+  });
+}
+
+/** 봇 경찰만 낮 채팅에 조결을 자동 게시. 인간 경찰은 비공개 안내만. */
 function postPolicePublicReport(room, policeIdOptional, opts = {}) {
   if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
   const report = buildPolicePublicReport(room, policeIdOptional);
   if (!report || !report.police) return;
+  const { police } = report;
+
+  if (!police.isBot) {
+    if (!report.hasIntel) {
+      if (!opts.silentIfNoIntel) notifyPoliceNoIntel(room, police);
+      return;
+    }
+    notifyPoliceReportDraft(room, police, report.text);
+    console.log(`[POLICE] draft-only (human) ${police.nickname}`);
+    return;
+  }
 
   if (!report.hasIntel) {
     if (opts.silentIfNoIntel) return;
     const text = '조결 요청입니다. 아직 이번 밤에 수사한 기록이 없습니다. 밤에 대상을 지목한 뒤 다시 조결해 주세요.';
     const msg = {
-      from: report.police.nickname,
-      fromId: report.police.id,
+      from: police.nickname,
+      fromId: police.id,
       text,
       time: Date.now()
     };
     pushChat(room, 'day', msg);
     broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
-    notePublicPoliceClaim(room, report.police.id);
-    console.log(`[POLICE] public report (no intel) by ${report.police.nickname}`);
+    notePublicPoliceClaim(room, police.id);
+    console.log(`[POLICE] public report (no intel) by ${police.nickname}`);
     return;
   }
 
   const msg = {
-    from: report.police.nickname,
-    fromId: report.police.id,
+    from: police.nickname,
+    fromId: police.id,
     text: report.text,
     time: Date.now()
   };
   pushChat(room, 'day', msg);
   chatSuspicion.ingestDayMessage(room, msg, voteFactHelpers);
   broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
-  notePublicPoliceClaim(room, report.police.id);
+  notePublicPoliceClaim(room, police.id);
   voteIntel.publishPoliceIntelToPublic(room);
-  console.log(`[POLICE] public report by ${report.police.nickname} intel=true`);
-  scheduleMafiaMatgyeongAfterReport(room, report.police.id);
+  if (voteIntel.ingestPoliceReportsFromDayChat) {
+    voteIntel.ingestPoliceReportsFromDayChat(room, voteFactHelpers);
+  }
+  console.log(`[POLICE] public report by ${police.nickname} intel=true`);
+  scheduleMafiaMatgyeongAfterReport(room, police.id);
 }
 
 function notifyPoliceNoIntel(room, police) {
@@ -1037,7 +1062,7 @@ function notifyPoliceNoIntel(room, police) {
   });
 }
 
-/** 경조결 요청: 인간 경찰은 무기록 멘트를 낮 채팅에 올리지 않음 */
+/** 경조결 요청: 인간 경찰은 채팅 자동 게시 없음(비공개 안내·직접 입력만) */
 function handlePoliceReportRequest(room, requester) {
   if (!room.game || room.phase !== PHASE.DAY_CHAT) return;
   const policeList = Object.values(room.players).filter(
@@ -3956,7 +3981,7 @@ function handleChat(room, socket, channel, text) {
   const player = getViewer(room, socket);
   if (!player) return;
   let msgText = String(text).trim();
-  if (channel === 'day') {
+  if (channel === 'day' && player.isBot) {
     msgText = policeFmt.rewriteFormalPoliceReport(msgText);
   }
   const msg = { from: player.nickname, fromId: player.id, text: msgText, time: Date.now() };
@@ -3974,6 +3999,14 @@ function handleChat(room, socket, channel, text) {
     broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
     if (isPoliceSelfClaim(msg.text)) {
       notePublicPoliceClaim(room, player.id);
+    }
+    if (player.role === ROLE.POLICE && policeFmt.looksLikePoliceReport(msg.text)) {
+      notePublicPoliceClaim(room, player.id);
+      voteIntel.publishPoliceIntelToPublic(room);
+      if (voteIntel.ingestPoliceReportsFromDayChat) {
+        voteIntel.ingestPoliceReportsFromDayChat(room, voteFactHelpers);
+      }
+      scheduleMafiaMatgyeongAfterReport(room, player.id);
     }
     const timeAdj = parseTimeAdjustRequest(msg.text);
     if (timeAdj && hasBots(room)) {
