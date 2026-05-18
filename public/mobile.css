@@ -407,6 +407,10 @@ body:has(#waiting-screen.active) #app {
     grid-template-columns: 36px 1fr auto;
   }
 
+  .vote-results-voters {
+    grid-column: 1 / -1;
+  }
+
   .vote-results-marks {
     display: none;
   }

@@ -2676,6 +2676,14 @@ body.phase-night .m42-banner-main {
   color: #fff;
 }
 
+.vote-results-voters {
+  grid-column: 1 / -1;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.55);
+  padding-top: 2px;
+}
+
 .execution-vote-overlay {
   position: fixed;
   inset: 0;

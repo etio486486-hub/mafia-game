@@ -841,11 +841,15 @@ function showVoteResultsOverlay(data) {
   list.innerHTML = (data.rows || []).map((row) => {
     const marks = Array.from({ length: row.votes }, () => '<span class="vote-tally-mark"></span>').join('');
     const topCls = row.playerId === data.topCandidateId && row.votes > 0 ? ' is-top' : '';
+    const voters = (row.voterNames && row.voterNames.length)
+      ? `<div class="vote-results-voters">투표: ${row.voterNames.map((n) => escapeHtml(n)).join(', ')}</div>`
+      : '';
     return `<li class="vote-results-row${topCls}">` +
       `<div class="vote-results-avatar">${buildPlayerAvatarInner(row.playerId)}</div>` +
       `<span class="vote-results-name">${escapeHtml(row.nickname)}</span>` +
       `<div class="vote-results-marks">${marks}</div>` +
       `<span class="vote-results-count">${row.votes}</span>` +
+      voters +
       `</li>`;
   }).join('');
 
@@ -1298,10 +1302,16 @@ function renderActionPanel() {
       const voted = state.myMafiaKillTarget
         ? state.players.find((p) => p.id === state.myMafiaKillTarget)
         : null;
+      const br = state.mafiaNightVoteBreakdown;
+      const brTxt = br && br.rows && br.rows.length
+        ? ` [동료: ${br.rows.map((r) => `${r.mafiaName}→${r.targetName || '…'}`).join(' · ')}]`
+        : '';
       if (voted) {
-        hint.textContent = `${voted.nickname}님에게 암살 투표함 · 밤이 끝나면 살해 처리됩니다.`;
+        hint.textContent = `${voted.nickname}님에게 암살 투표함 · 밤이 끝나면 살해 처리됩니다.${brTxt}`;
+      } else if (state.mafiaKillStatus === 'split_vote') {
+        hint.textContent = `마피아 표가 갈렸습니다.${brTxt} 모두 같은 대상에 「암살 투표」로 맞춰 주세요.`;
       } else if (state.mafiaKillStatus === 'need_all_votes') {
-        hint.textContent = `마피아 ${mateCount}명 — 모두 같은 사람에 「암살 투표」해야 합니다. (낮 처형 투표와 다름)`;
+        hint.textContent = `마피아 ${mateCount}명 — 모두 같은 사람에 「암살 투표」해야 합니다. (낮 처형 투표와 다름)${brTxt}`;
       } else if (mateCount >= 2) {
         hint.textContent = `대상 선택 → 「암살 투표」. 봇 동료는 당신 표를 따릅니다. 동료: ${mates.map(m => m.nickname).join(', ')}`;
       } else {

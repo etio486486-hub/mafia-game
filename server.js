@@ -289,7 +289,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-17d',
+    stability: '2026-05-18b',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -1160,7 +1160,6 @@ function handlePoliceReportRequest(room, requester) {
   );
   if (!policeList.length) {
     scheduleMafiaHolgyeongOnReportRequest(room);
-    pushGameSystemMessage(room, '생존 경찰이 없어 조결을 받을 수 없습니다.');
     return;
   }
 
@@ -1335,7 +1334,7 @@ function schedulePoliceReportResponses(room) {
     (p) => p.role === ROLE.POLICE && p.alive
   );
   if (!policeList.length) {
-    pushGameSystemMessage(room, '생존 경찰이 없어 조결을 받을 수 없습니다.');
+    scheduleMafiaHolgyeongOnReportRequest(room);
     return;
   }
   policeList.forEach((police, i) => {
@@ -1560,6 +1559,11 @@ function pickBotDayVoteTarget(room, bot) {
       && voteFacts.isStrongFactTarget(room, bot, factTarget, voteFactHelpers)) {
       return factTarget;
     }
+  }
+
+  const chatKeyword = voteFacts.pickChatKeywordDayVote(room, bot, voteFactHelpers);
+  if (chatKeyword && chatKeyword !== bot.id) {
+    return chatKeyword;
   }
 
   const fallback = voteFacts.pickFallbackDayVoteTarget(room, bot, voteFactHelpers);
@@ -2460,6 +2464,7 @@ function toClientState(room, viewerUserId, opts = {}) {
       ? (room.game.nightActions.mafiaVotes[viewerId] || null)
       : null,
     mafiaKillStatus: buildMafiaKillStatus(room),
+    mafiaNightVoteBreakdown: buildMafiaNightVoteBreakdown(room, viewer),
     reporterUsed: viewer ? viewer.reporterUsed : false,
     spyResolved: !!(viewer && room.game && room.game.nightActions && room.game.nightActions.spyResolved),
     policeResolved: !!(viewer && room.game && room.game.nightActions && room.game.nightActions.policeResolved),
@@ -3109,6 +3114,35 @@ function onPhaseTimeout(room) {
   }
 }
 
+function buildMafiaNightVoteBreakdown(room, viewer) {
+  if (!room.game || room.phase !== PHASE.NIGHT || !viewer || viewer.role !== ROLE.MAFIA || !viewer.alive) {
+    return null;
+  }
+  const votes = room.game.nightActions?.mafiaVotes || {};
+  const mafiaAlive = getAlivePlayers(room).filter((p) => p.role === ROLE.MAFIA);
+  if (mafiaAlive.length <= 1) return null;
+
+  const rows = mafiaAlive.map((m) => {
+    const tid = votes[m.id];
+    const tgt = tid ? getPlayerById(room, tid) : null;
+    return {
+      mafiaId: m.id,
+      mafiaName: m.nickname,
+      targetId: tid || null,
+      targetName: tgt ? tgt.nickname : null
+    };
+  });
+
+  const tally = {};
+  for (const r of rows) {
+    if (!r.targetId) continue;
+    tally[r.targetId] = (tally[r.targetId] || 0) + 1;
+  }
+  const split = Object.keys(tally).length > 1;
+  const undecided = rows.some((r) => !r.targetId);
+  return { rows, tally, split, undecided };
+}
+
 function buildMafiaKillStatus(room) {
   if (!room.game || room.phase !== PHASE.NIGHT) return null;
   const mafiaAlive = getAlivePlayers(room).filter((p) => p.role === ROLE.MAFIA);
@@ -3600,7 +3634,8 @@ function buildDayVoteResults(room) {
     playerId: p.id,
     nickname: p.nickname,
     votes: tally[p.id] || 0,
-    voterIds: voterMap[p.id] || []
+    voterIds: voterMap[p.id] || [],
+    voterNames: (voterMap[p.id] || []).map((vid) => playerName(room, vid)).filter(Boolean)
   })).sort((a, b) => b.votes - a.votes);
 
   return {
