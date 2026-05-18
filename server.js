@@ -289,7 +289,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-18f',
+    stability: '2026-05-18g',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -806,8 +806,9 @@ function isMediumPurifyRequest(text) {
   return mediumPurify.isMediumPurifyRequest(text);
 }
 
-function isPoliceReportRequest(text) {
+function isPoliceReportRequest(text, room = null) {
   if (!text) return false;
+  if (room && voteFacts.isPoliceReportProviding(text, room)) return false;
   const raw = String(text);
   const compact = raw.replace(/\s+/g, '');
   if (/경조결|경찰조사|경찰수사|수사결과|조사결과|경찰결과|조결|조사결|경찰조사결과/.test(compact)) {
@@ -1674,6 +1675,7 @@ botBrain.configure({
     mind.fakeClaim = role;
   },
   isPoliceReportRequest,
+  isPoliceReportProviding: (text, r) => voteFacts.isPoliceReportProviding(text, r),
   buildPolicePublicReport,
   isRoleClaimRequest,
   isRoleRollCallQuestion,
@@ -2013,6 +2015,22 @@ function scheduleBotRoleRollCall(room, triggerText, excludeBotId = null) {
   });
 }
 
+/** 인간 경찰 조결 공개 후 다른 봇이 따라 말하도록 */
+function scheduleBotReplyToPoliceReport(room, reportMsg) {
+  if (!hasBots(room) || room.phase !== PHASE.DAY_CHAT || !reportMsg?.text) return;
+  const delays = [1400, 2800, 4200];
+  delays.forEach((base, i) => {
+    scheduleRoomTask(room, () => {
+      if (room.phase !== PHASE.DAY_CHAT) return;
+      runBotDayChat(room, {
+        triggerText: reportMsg.text,
+        policeReportAck: true,
+        reportFromId: reportMsg.fromId
+      });
+    }, base + Math.floor(Math.random() * 500) + i * 80);
+  });
+}
+
 function scheduleBotReplyToHuman(room, opts = {}) {
   if (!hasBots(room) || room.phase !== PHASE.DAY_CHAT) return;
   const triggerText = opts.triggerText || '';
@@ -2030,7 +2048,8 @@ function scheduleBotReplyToHuman(room, opts = {}) {
   }
 
   if (room._botHumanReplyTimer) clearTimeout(room._botHumanReplyTimer);
-  const policeReport = !!opts.policeReport || isPoliceReportRequest(triggerText);
+  const policeReport = !!opts.policeReport
+    || (isPoliceReportRequest(triggerText, room) && !voteFacts.isPoliceReportProviding(triggerText, room));
   const delay = policeReport ? 2200 : (timeAdj ? 900 : BOT_CHAT.HUMAN_REPLY_WAIT_MS);
   room._botHumanReplyTimer = setTimeout(() => {
     room._botHumanReplyTimer = null;
@@ -4279,13 +4298,19 @@ function handleChat(room, socket, channel, text) {
     if (isPoliceSelfClaim(msg.text)) {
       notePublicPoliceClaim(room, player.id);
     }
-    if (player.role === ROLE.POLICE && policeFmt.looksLikePoliceReport(msg.text)) {
+    const policeProviding = player.role === ROLE.POLICE
+      && (policeFmt.looksLikePoliceReport(msg.text)
+        || voteFacts.isPoliceReportProviding(msg.text, room));
+    if (policeProviding) {
       notePublicPoliceClaim(room, player.id);
       voteIntel.publishPoliceIntelToPublic(room);
       if (voteIntel.ingestPoliceReportsFromDayChat) {
         voteIntel.ingestPoliceReportsFromDayChat(room, voteFactHelpers);
       }
       scheduleMafiaMatgyeongAfterReport(room, player.id);
+      if (!player.isBot && hasBots(room)) {
+        scheduleBotReplyToPoliceReport(room, msg);
+      }
     }
     const timeAdj = parseTimeAdjustRequest(msg.text);
     if (timeAdj && hasBots(room)) {
@@ -4293,7 +4318,7 @@ function handleChat(room, socket, channel, text) {
     }
     if (isMediumPurifyRequest(msg.text)) {
       handleMediumPurifyChatRequest(room);
-    } else if (isPoliceReportRequest(msg.text)) {
+    } else if (isPoliceReportRequest(msg.text, room)) {
       handlePoliceReportRequest(room, player);
     } else if (hasBots(room) && !player.isBot) {
       scheduleBotReplyToHuman(room, { triggerText: msg.text });
