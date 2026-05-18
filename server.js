@@ -289,7 +289,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-16c',
+    stability: '2026-05-16e',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -3240,6 +3240,13 @@ function resolveCultProselytize(room) {
     situation: '[상황] 교주에게 포교당한 경우',
     duration: 4200
   });
+  broadcastToRoom(room, 'gameMotion', {
+    type: 'cult_proselytize',
+    title: '종소리',
+    message: '교주의 종소리가 울려퍼졌습니다.',
+    situation: '[상황] 교주가 포교에 성공한 경우',
+    duration: 3800
+  }, (p) => p.userID !== target.userID);
   broadcastToRoom(room, 'skillNotice', {
     scope: 'public',
     kind: 'cult',
