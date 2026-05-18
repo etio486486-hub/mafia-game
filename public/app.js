@@ -50,7 +50,7 @@ const ROLE = {
   MAFIA: 'mafia', SPY: 'spy', CITIZEN: 'citizen',
   POLICE: 'police', DOCTOR: 'doctor', SOLDIER: 'soldier',
   POLITICIAN: 'politician', MEDIUM: 'medium', REPORTER: 'reporter',
-  GRAVEROBBER: 'graverobber'
+  GRAVEROBBER: 'graverobber', CULT_LEADER: 'cult_leader'
 };
 
 const ROLE_GUIDE = {
@@ -103,6 +103,11 @@ const ROLE_GUIDE = {
     name: '도굴꾼', team: '시민 팀',
     desc: '첫 번째 밤에 첫 사망자의 직업을 계승합니다. 별도 선택 없이 자동 적용됩니다.',
     tip: '첫 밤 이후 새 직업 확인'
+  },
+  [ROLE.CULT_LEADER]: {
+    name: '교주', team: '교주 팀',
+    desc: '홀수 밤마다 마피아가 아닌 생존자 1명을 포교해 교주팀으로 만듭니다. 마피아·이미 포교된 대상은 불가. 포교 성공 시 종소리가 울립니다.',
+    tip: '홀수 밤 → 대상 선택 → 포교 · 밤챗(교주팀 탭)으로 신도에게 지시'
   }
 };
 
@@ -112,7 +117,9 @@ const M42_GLOSSARY = [
   { term: '자투', mean: '자신에게 투표해 무투표로 넘기기' },
   { term: '조밤', mean: '밤에 아무도 사망하지 않음' },
   { term: '투갈', mean: '최다 득표 동점으로 처형 없음' },
-  { term: '접선', mean: '스파이가 마피아와 합류해 밤챗 사용' }
+  { term: '접선', mean: '스파이가 마피아와 합류해 밤챗 사용' },
+  { term: '포교', mean: '교주가 밤에 시민 등을 교주팀으로 전환' },
+  { term: '교밤', mean: '포교 가능한 홀수 번째 밤' }
 ];
 
 const FX_MAP = {
@@ -123,7 +130,8 @@ const FX_MAP = {
   'anim-investigate': { cls: 'fx-investigate', text: '조사!' },
   'anim-reporter-flash': { cls: 'fx-reporter', text: '취재!' },
   'anim-night-fall': { cls: 'fx-phase-night', text: '밤이 됩니다' },
-  'anim-dawn-rise': { cls: 'fx-phase-day', text: '아침이 밝았습니다' }
+  'anim-dawn-rise': { cls: 'fx-phase-day', text: '아침이 밝았습니다' },
+  'anim-cult-proselytize': { cls: 'fx-cult', text: '종소리…' }
 };
 
 let userID = sessionStorage.getItem('mafia_userID');
@@ -254,7 +262,7 @@ function canSelectActionTarget() {
   if (state.phase === 'day_vote') return true;
   if (state.phase === 'night') {
     if (state.myRole === ROLE.MEDIUM) return true;
-    return [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER].includes(state.myRole);
+    return [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER].includes(state.myRole);
   }
   return false;
 }
@@ -266,13 +274,13 @@ function canSelectPlayerSlot(p) {
   if (state.phase === 'day_vote') return me.alive && p.alive;
   if (state.phase === 'night' && me.alive) {
     if (state.myRole === ROLE.MEDIUM) return !p.alive;
-    return p.alive && [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER].includes(state.myRole);
+    return p.alive && [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER].includes(state.myRole);
   }
   return false;
 }
 
 let activeChatChannel = 'day';
-const chatStore = { lobby: [], day: [], mafia: [], dead: [], lastWords: [] };
+const chatStore = { lobby: [], day: [], mafia: [], cult: [], dead: [], lastWords: [] };
 let timerInterval = null;
 let phaseEndEstimate = 0;
 
@@ -607,7 +615,10 @@ function renderFromState() {
   if (state.phase === 'game_over') {
     dismissGameOverlays();
     showScreen('gameover');
-    $('#gameover-message').textContent = state.winner === 'mafia' ? '마피아 팀 승리!' : '시민 팀 승리!';
+    const winMsg = state.winner === 'mafia'
+      ? '마피아 팀 승리!'
+      : (state.winner === 'cult' ? '교주 팀 승리!' : '시민 팀 승리!');
+    $('#gameover-message').textContent = winMsg;
     $('#gameover-roles').innerHTML = state.players.map(p =>
       `<li class="gameover-role-row">` +
       (p.role ? buildRoleProfileCard(p.role, { compact: true }) : '') +
@@ -635,6 +646,7 @@ function renderFromState() {
   if (Array.isArray(state.dayChat)) chatStore.day = state.dayChat;
   if (Array.isArray(state.deadChat)) chatStore.dead = state.deadChat;
   if (Array.isArray(state.mafiaChat)) chatStore.mafia = state.mafiaChat;
+  if (Array.isArray(state.cultChat)) chatStore.cult = state.cultChat;
   if (Array.isArray(state.lastWordsChat)) chatStore.lastWords = state.lastWordsChat;
 
   if (state.myRoleLabel && !state.myRole) {
@@ -1154,13 +1166,16 @@ function renderPlayerGrid() {
     if (isSelf) cls += ' is-self';
     if (note.guessedRole) cls += ' has-guess';
     const isTeammate = !isSelf && p.isMafiaTeammate;
+    const isCultFollower = !isSelf && p.isCultFollower;
     if (isTeammate) cls += ' mafia-teammate';
+    if (isCultFollower) cls += ' cult-follower';
 
     let status = isDead ? '사망' : (p.connected ? '' : '재연결');
     if (isCandidate) status = '처형 후보';
     if (isTeammate) status = status || '팀';
+    if (isCultFollower) status = status || '신도';
 
-    const teammateRole = isTeammate ? p.role : null;
+    const teammateRole = isTeammate ? p.role : (isCultFollower ? p.role : null);
     const showRoleImg = (isSelf && state.myRole) || teammateRole;
     const avatarInner = showRoleImg
       ? buildRolePortraitHtml(isSelf ? state.myRole : teammateRole)
@@ -1170,9 +1185,11 @@ function renderPlayerGrid() {
 
     const guessHtml = isTeammate
       ? `<span class="slot-team-badge role-${p.role}" title="마피아 팀">${escapeHtml(p.roleLabel || '팀')}</span>`
-      : (guessedLabel
+      : (isCultFollower
+        ? `<span class="slot-team-badge role-${p.role}" title="교주팀 신도">${escapeHtml(p.roleLabel || '신도')}</span>`
+        : (guessedLabel
         ? `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(guessedLabel)}</button>`
-        : `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`);
+        : `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`)));
 
     const canSelect = canSelectPlayerSlot(p);
     if (state.myDayVoteTarget === p.id) cls += ' voted';
@@ -1304,6 +1321,26 @@ function renderActionPanel() {
     if (state.myRole === ROLE.REPORTER && (state.nightIndex || 0) < 2) {
       hint.textContent = '기자 취재는 2번째 밤부터 사용할 수 있습니다.';
     }
+    if (state.myRole === ROLE.CULT_LEADER) {
+      if (state.cultProselytizeTonight && !state.cultResolved) {
+        addConfirmBtn(btns, '포교', () => emitNightAction('cultProselytize'));
+        const voted = state.myCultProselytizeTarget
+          ? state.players.find((p) => p.id === state.myCultProselytizeTarget)
+          : null;
+        if (voted) {
+          hint.textContent = `${voted.nickname}님에게 포교 예정 · 밤이 끝나면 처리됩니다.`;
+        } else {
+          hint.textContent = '홀수 밤: 생존자 선택 → 「포교」. 마피아에게는 실패합니다.';
+        }
+      } else if ((state.nightIndex || 0) % 2 === 0) {
+        hint.textContent = '짝수 밤에는 포교할 수 없습니다. 교주팀 탭으로 신도에게 지시하세요.';
+      } else if (state.cultResolved) {
+        hint.textContent = '이번 밤 포교를 마쳤습니다. 교주팀 탭으로 밤챗을 보내세요.';
+      }
+    }
+    if (state.joinedCult && state.myRole !== ROLE.CULT_LEADER) {
+      hint.textContent = '교주팀입니다. 교주팀 탭에서 교주의 지시를 확인하세요.';
+    }
     if (state.myRole === ROLE.CITIZEN || state.myRole === ROLE.SOLDIER || state.myRole === ROLE.POLITICIAN || state.myRole === ROLE.GRAVEROBBER) {
       hint.textContent = '이 밤에는 사용할 능력이 없습니다.';
     }
@@ -1370,7 +1407,8 @@ function emitNightAction(event) {
     spyInvestigate: { anim: 'anim-investigate', cardFx: null },
     policeInvestigate: { anim: 'anim-investigate', cardFx: null },
     reporterScoop: { anim: 'anim-reporter-flash', cardFx: null },
-    mediumPurify: { anim: 'anim-investigate', cardFx: null }
+    mediumPurify: { anim: 'anim-investigate', cardFx: null },
+    cultProselytize: { anim: 'anim-cult-proselytize', cardFx: 'fx-target-cult' }
   };
   const fx = animMap[event];
   if (fx) runAnimation(fx.anim, { targetId: selectedTargetId, cardFx: fx.cardFx });
@@ -1458,10 +1496,12 @@ function submitExecutionVote(vote) {
 function updateChatTabs() {
   const tabDay = $('#tab-day');
   const tabMafia = $('#tab-mafia');
+  const tabCult = $('#tab-cult');
   const tabDead = $('#tab-dead');
   const tabLast = $('#tab-lastwords');
 
   tabMafia.hidden = !state.canMafiaChat;
+  if (tabCult) tabCult.hidden = !state.canCultChat;
   const me = state.players.find(p => p.id === state.myPlayerId);
   const mediumAlive = me && me.alive && state.myRole === ROLE.MEDIUM;
   tabDead.hidden = !state.canDeadChatView || (state.phase === 'day_chat' && !mediumAlive && me && me.alive);
@@ -1470,9 +1510,10 @@ function updateChatTabs() {
   if (state.phase === 'night') {
     tabDay.textContent = '밤 (낮 채팅 비활성)';
     if (state.canMafiaChat && activeChatChannel === 'day') activeChatChannel = 'mafia';
+    if (state.canCultChat && activeChatChannel === 'day' && !state.canMafiaChat) activeChatChannel = 'cult';
   } else if (state.phase === 'dawn' || state.phase === 'day_chat') {
     tabDay.textContent = state.phase === 'dawn' ? '아침 (대화 불가)' : '낮 채팅';
-    if (activeChatChannel === 'mafia') activeChatChannel = 'day';
+    if (activeChatChannel === 'mafia' || activeChatChannel === 'cult') activeChatChannel = 'day';
   } else if (state.phase === 'last_words') {
     if (activeChatChannel !== 'lastWords') activeChatChannel = 'lastWords';
   } else {
@@ -1481,6 +1522,7 @@ function updateChatTabs() {
 
   if (tabLast.hidden && activeChatChannel === 'lastWords') activeChatChannel = 'day';
   if (tabMafia.hidden && activeChatChannel === 'mafia') activeChatChannel = 'day';
+  if (tabCult && tabCult.hidden && activeChatChannel === 'cult') activeChatChannel = 'day';
   if (tabDead.hidden && activeChatChannel === 'dead') activeChatChannel = 'day';
 
   document.querySelectorAll('.chat-tab').forEach(t => {
@@ -1491,6 +1533,7 @@ function updateChatTabs() {
   const canType = (
     (activeChatChannel === 'day' && state.phase === 'day_chat' && me && (me.alive || state.canDeadChatSend)) ||
     (activeChatChannel === 'mafia' && state.phase === 'night' && state.canMafiaChat) ||
+    (activeChatChannel === 'cult' && state.phase === 'night' && state.myRole === ROLE.CULT_LEADER) ||
     (activeChatChannel === 'dead' && state.canDeadChatView && state.canDeadChatSend) ||
     (activeChatChannel === 'lastWords' && state.phase === 'last_words' && state.myPlayerId === state.executionCandidateId)
   );
@@ -1676,6 +1719,7 @@ socket.on('stateSync', (data) => {
   const savedChat = {
     day: chatStore.day,
     mafia: chatStore.mafia,
+    cult: chatStore.cult,
     dead: chatStore.dead,
     lastWords: chatStore.lastWords,
     lobby: chatStore.lobby
@@ -1683,6 +1727,7 @@ socket.on('stateSync', (data) => {
   state = data;
   if (!Array.isArray(data.dayChat) && savedChat.day.length) chatStore.day = savedChat.day;
   if (!Array.isArray(data.mafiaChat) && savedChat.mafia.length) chatStore.mafia = savedChat.mafia;
+  if (!Array.isArray(data.cultChat) && savedChat.cult.length) chatStore.cult = savedChat.cult;
   if (!Array.isArray(data.deadChat) && savedChat.dead.length) chatStore.dead = savedChat.dead;
   if (!Array.isArray(data.lastWordsChat) && savedChat.lastWords.length) chatStore.lastWords = savedChat.lastWords;
   if (!Array.isArray(data.lobbyChat) && savedChat.lobby.length) chatStore.lobby = savedChat.lobby;
@@ -2000,6 +2045,7 @@ function sendChat() {
   const me = state && state.players.find(p => p.id === state.myPlayerId);
   let eventName = 'chat';
   if (activeChatChannel === 'mafia') eventName = 'mafiaChat';
+  else if (activeChatChannel === 'cult') eventName = 'cultChat';
   else if (activeChatChannel === 'lastWords') eventName = 'lastWordsChat';
   else if (activeChatChannel === 'dead' || (activeChatChannel === 'day' && me && !me.alive)) eventName = 'deadChat';
   socket.emit(eventName, { text });
