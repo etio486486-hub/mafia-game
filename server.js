@@ -289,7 +289,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-18e',
+    stability: '2026-05-18f',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -550,8 +550,48 @@ function scheduleBotDeadChatOnDeath(room, bot) {
 
 function markPlayerDead(room, player) {
   if (!player || !player.alive) return;
+  const wasPolice = player.role === ROLE.POLICE;
   player.alive = false;
   if (player.isBot) scheduleBotDeadChatOnDeath(room, player);
+  if (wasPolice) {
+    scheduleRoomTask(room, () => {
+      m42Bluff.promoteMafiaPoliceBluffer(room, voteFactHelpers);
+      scheduleMafiaBluffPoliceMaintains(room);
+    }, 400);
+  }
+}
+
+function isRealPoliceAlive(room) {
+  return Object.values(room.players || {}).some(
+    (p) => p && p.role === ROLE.POLICE && p.alive
+  );
+}
+
+/** 진경 사망 후 지정 마피아 봇이 낮에 가짜 조결을 주기적으로 냄 */
+function scheduleMafiaBluffPoliceMaintains(room) {
+  if (!room.game || !hasBots(room) || isRealPoliceAlive(room)) return;
+  if (room.phase !== PHASE.DAY_CHAT) return;
+
+  m42Bluff.promoteMafiaPoliceBluffer(room, voteFactHelpers);
+  const bluffer = m42Bluff.getMafiaPoliceBlufferBot(room, voteFactHelpers);
+  if (!bluffer || !bluffer.alive) return;
+
+  const wave = `bluff_police_d${room.game.dayIndex || 0}`;
+  if (!room._mafiaBluffPoliceWave) room._mafiaBluffPoliceWave = {};
+  if (room._mafiaBluffPoliceWave[wave]) return;
+  room._mafiaBluffPoliceWave[wave] = true;
+
+  [1600, 4200, 7800, 11500].forEach((ms) => {
+    scheduleRoomTask(room, () => {
+      if (room.phase !== PHASE.DAY_CHAT || isRealPoliceAlive(room)) return;
+      if (!bluffer.alive) return;
+      const text = m42Bluff.buildFakePoliceReportLine(room, bluffer, voteFactHelpers, {
+        forceInnocent: true,
+        preferClearMafiaAlly: Math.random() < 0.7
+      });
+      if (text) postBotDayMessage(room, bluffer, text);
+    }, ms);
+  });
 }
 
 function resetBotChatStats(room) {
@@ -1558,6 +1598,11 @@ function pickTopSuspect(room, bot, { excludeMafiaTeam = false, skipBotHumanBias 
 }
 
 function pickBotDayVoteTarget(room, bot) {
+  if (isMafiaTeam(bot.role)) {
+    const mafiaTarget = voteFacts.pickMafiaTeamDayVote(room, bot, voteFactHelpers);
+    if (mafiaTarget) return mafiaTarget;
+  }
+
   const policeMafia = voteFacts.pickPoliceAccusedMafia(room, bot, voteFactHelpers);
   if (policeMafia && policeMafia !== bot.id) {
     return policeMafia;
@@ -2998,6 +3043,9 @@ function startDayChat(room) {
   scheduleBotDawnSkillReactions(room);
   scheduleBotDayChat(room);
   scheduleMafiaEarlyPoliceBluff(room);
+  if (!isRealPoliceAlive(room)) {
+    scheduleMafiaBluffPoliceMaintains(room);
+  }
   scheduleRoomTask(room, () => {
     const policeBot = Object.values(room.players).find(
       (p) => p.role === ROLE.POLICE && p.alive && p.isBot
