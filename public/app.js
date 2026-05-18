@@ -261,7 +261,7 @@ function canSelectActionTarget() {
   if (!me || !me.alive) return false;
   if (state.phase === 'day_vote') return true;
   if (state.phase === 'night') {
-    if (state.myRole === ROLE.MEDIUM) return true;
+    if (state.myRole === ROLE.MEDIUM) return !state.mediumResolved;
     return [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER].includes(state.myRole);
   }
   return false;
@@ -273,7 +273,10 @@ function canSelectPlayerSlot(p) {
   if (!me) return false;
   if (state.phase === 'day_vote') return me.alive && p.alive;
   if (state.phase === 'night' && me.alive) {
-    if (state.myRole === ROLE.MEDIUM) return !p.alive;
+    if (state.myRole === ROLE.MEDIUM) {
+      if (state.mediumResolved) return false;
+      return !p.alive;
+    }
     return p.alive && [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER].includes(state.myRole);
   }
   return false;
@@ -1332,14 +1335,18 @@ function renderActionPanel() {
     }
     if (state.myRole === ROLE.DOCTOR) addConfirmBtn(btns, '치료', () => emitNightAction('doctorHeal'));
     if (state.myRole === ROLE.MEDIUM) {
-      const deadN = countDeadPlayers();
-      if (deadN > 0) {
-        addConfirmBtn(btns, '성불', () => emitNightAction('mediumPurify'));
-        hint.textContent = state.canDeadChatView
-          ? `사망자 ${deadN}명 중 한 명을 선택한 뒤 성불하세요. (이번 밤에 죽은 사람은 아침 이후 가능)`
-          : `사망자 ${deadN}명 중 한 명을 선택한 뒤 성불하세요.`;
+      if (state.mediumResolved) {
+        hint.textContent = '이번 밤 성불을 완료했습니다.';
       } else {
-        hint.textContent = '이번 밤에 성불할 사망자가 없습니다. 이전에 죽은 사람만 성불할 수 있습니다.';
+        const deadN = countDeadPlayers();
+        if (deadN > 0) {
+          addConfirmBtn(btns, '성불', () => emitNightAction('mediumPurify'));
+          hint.textContent = state.canDeadChatView
+            ? `사망자 ${deadN}명 중 한 명을 선택한 뒤 성불하세요. (이번 밤에 죽은 사람은 아침 이후 가능)`
+            : `사망자 ${deadN}명 중 한 명을 선택한 뒤 성불하세요.`;
+        } else {
+          hint.textContent = '이번 밤에 성불할 사망자가 없습니다. 이전에 죽은 사람만 성불할 수 있습니다.';
+        }
       }
     }
     if (state.myRole === ROLE.REPORTER && !state.reporterUsed && (state.nightIndex || 0) >= 2) {
@@ -1423,6 +1430,7 @@ function addConfirmBtn(parent, label, onClick) {
 function emitNightAction(event) {
   if (!selectedTargetId) return showToast('대상을 선택하세요.');
   if (event === 'mediumPurify') {
+    if (state.mediumResolved) return showToast('이번 밤에는 이미 성불했습니다.');
     const target = state.players.find(p => p.id === selectedTargetId);
     if (!target || target.alive) return showToast('사망자만 성불할 수 있습니다.');
     socket.emit('mediumPurify', { targetId: selectedTargetId });
@@ -1458,6 +1466,9 @@ function onPlayerCardClick(id) {
   if (state.phase === 'night' && me && me.alive && player) {
     if (!canSelectPlayerSlot(player)) {
       if (state.myRole === ROLE.MEDIUM) {
+        if (state.mediumResolved) {
+          return showToast('이번 밤에는 이미 성불했습니다.');
+        }
         if (player.alive) {
           return showToast('사망자만 성불할 수 있습니다. (이번 밤에 죽은 사람은 아침 이후에 성불 가능)');
         }
