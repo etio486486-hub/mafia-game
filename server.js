@@ -289,7 +289,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-18d',
+    stability: '2026-05-18e',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -1225,7 +1225,9 @@ function pickEvilPoliceBluffers(room, excludeIds = []) {
     if (fc && fc !== 'police' && fc !== 'mafia' && fc !== 'spy' && fc !== 'cult_leader') {
       return false;
     }
-    if (isMafiaTeam(b.role)) return true;
+    if (isMafiaTeam(b.role)) {
+      return m42Bluff.mayMafiaTeamBotBluffPolice(room, b, voteFactHelpers);
+    }
     if (isCultMember(b)) return true;
     return false;
   });
@@ -1298,6 +1300,7 @@ function scheduleMafiaHolgyeongOnReportRequest(room) {
 
   const mafiaBots = getBots(room).filter(
     (b) => b.alive && isMafiaTeam(b.role) && b.role !== ROLE.POLICE
+      && m42Bluff.mayMafiaTeamBotBluffPolice(room, b, voteFactHelpers)
   );
   if (!mafiaBots.length) return;
 
@@ -1316,7 +1319,10 @@ function getDayMessages(room) {
 /** 낮 시작 직후 마피아 홀경 — 가짜 조결로 먼저 말함 (직공 메타 없음) */
 function scheduleMafiaEarlyPoliceBluff(room) {
   if (!room.game || room.phase !== PHASE.DAY_CHAT || !hasBots(room)) return;
-  const mafiaBots = getBots(room).filter((b) => b.alive && isMafiaTeam(b.role) && b.role !== ROLE.POLICE);
+  const mafiaBots = getBots(room).filter(
+    (b) => b.alive && isMafiaTeam(b.role) && b.role !== ROLE.POLICE
+      && m42Bluff.mayMafiaTeamBotBluffPolice(room, b, voteFactHelpers)
+  );
   if (!mafiaBots.length) return;
   const bluffer = mafiaBots[Math.floor(Math.random() * mafiaBots.length)];
   scheduleRoomTask(room, () => {
@@ -1895,11 +1901,18 @@ async function runBotDayChat(room, ctx = {}) {
     let bot;
     const trigger = ctx.triggerText || '';
     if (m42Bluff.wantsMatgyeongAsk(trigger)) {
-      const mafiaBots = bots.filter((b) => isMafiaTeam(b.role) && b.role !== ROLE.POLICE);
-      bot = mafiaBots.length ? shuffle(mafiaBots)[0] : shuffle(bots)[0];
+      const mafiaBots = bots.filter(
+        (b) => isMafiaTeam(b.role) && b.role !== ROLE.POLICE
+          && m42Bluff.mayMafiaTeamBotBluffPolice(room, b, voteFactHelpers)
+      );
+      const mafiaAny = bots.filter((b) => isMafiaTeam(b.role) && b.role !== ROLE.POLICE);
+      bot = mafiaBots.length
+        ? shuffle(mafiaBots)[0]
+        : (mafiaAny.length ? shuffle(mafiaAny)[0] : shuffle(bots)[0]);
     } else if (ctx.policeReport && isPoliceReportRequest(trigger)) {
       const mafiaBluffers = bots.filter(
         (b) => isMafiaTeam(b.role) && b.role !== ROLE.POLICE
+          && m42Bluff.mayMafiaTeamBotBluffPolice(room, b, voteFactHelpers)
       );
       bot = mafiaBluffers.length
         ? shuffle(mafiaBluffers)[0]
