@@ -1195,7 +1195,7 @@ function renderPlayerGrid() {
         ? `<span class="slot-team-badge role-${p.role}" title="교주팀 신도">${escapeHtml(p.roleLabel || '신도')}</span>`
         : (guessedLabel
         ? `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(guessedLabel)}</button>`
-        : `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`)));
+        : `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`));
 
     const canSelect = canSelectPlayerSlot(p);
     if (state.myDayVoteTarget === p.id) cls += ' voted';
