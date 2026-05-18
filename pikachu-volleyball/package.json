@@ -1,0 +1,13 @@
+{
+  "name": "pikachu-volleyball",
+  "version": "1.0.0",
+  "description": "피카츄배구 4인 — 로컬 및 LAN/온라인 멀티플레이",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "serve": "node server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

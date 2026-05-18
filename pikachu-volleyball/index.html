@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>피카츄배구 4인 — 네트워크</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      background: linear-gradient(180deg, #87ceeb 0%, #b8e6ff 45%, #7ec850 45%, #5a9e38 100%);
+      font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+      color: #2d2d2d;
+      padding: 12px;
+    }
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 8px;
+      text-shadow: 2px 2px 0 #fff8;
+    }
+    .layout {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      justify-content: center;
+      align-items: flex-start;
+      max-width: 1200px;
+    }
+    #wrap {
+      position: relative;
+      border: 4px solid #3d2914;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px #0005;
+      background: #1a1a2e;
+    }
+    canvas { display: block; image-rendering: pixelated; }
+    #hud {
+      position: absolute;
+      top: 8px;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: space-between;
+      padding: 0 24px;
+      pointer-events: none;
+      font-weight: 700;
+      font-size: 1.4rem;
+      color: #fff;
+      text-shadow: 2px 2px 0 #0008;
+    }
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #0009;
+      color: #fff;
+      text-align: center;
+      padding: 20px;
+      z-index: 2;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h2 { font-size: 1.6rem; margin-bottom: 10px; }
+    #overlay p, #overlayBody { margin: 6px 0; line-height: 1.5; }
+    .btn {
+      margin-top: 12px;
+      padding: 10px 22px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      border: none;
+      border-radius: 8px;
+      background: #ffcc00;
+      color: #3d2914;
+      cursor: pointer;
+      box-shadow: 0 4px 0 #c9a000;
+    }
+    .btn:hover { filter: brightness(1.05); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn.secondary { background: #90caf9; box-shadow: 0 4px 0 #5c9fd4; }
+    .sidebar {
+      width: 300px;
+      background: #fff9;
+      border: 2px solid #3d291433;
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 0.88rem;
+    }
+    .mode-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+    .mode-tabs button {
+      flex: 1;
+      padding: 8px;
+      border: 2px solid #3d291433;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .mode-tabs button.active {
+      background: #ffcc00;
+      border-color: #c9a000;
+    }
+    .hidden { display: none !important; }
+    label { display: block; margin: 8px 0 4px; font-weight: 600; }
+    input[type="text"] {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+    .status { margin-top: 8px; font-size: 0.85rem; font-weight: 600; }
+    .status.ok { color: #2e7d32; }
+    .status.err { color: #c62828; }
+    .status.connecting { color: #1565c0; }
+    #slotPicker {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin: 10px 0;
+    }
+    #slotPicker button {
+      padding: 10px;
+      border: 2px solid #bbb;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    #slotPicker button.selected {
+      border-color: #ff9800;
+      background: #fff3e0;
+    }
+    #lobbyList {
+      list-style: none;
+      margin: 8px 0;
+      padding: 8px;
+      background: #fff;
+      border-radius: 6px;
+      min-height: 80px;
+      font-size: 0.85rem;
+    }
+    #lobbyList li { padding: 4px 0; border-bottom: 1px solid #eee; }
+    #hostHint {
+      font-size: 0.8rem;
+      line-height: 1.4;
+      margin: 8px 0;
+      color: #444;
+    }
+    #hostHint code {
+      display: block;
+      margin-top: 4px;
+      background: #eee;
+      padding: 4px 6px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      word-break: break-all;
+    }
+    .controls-box {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #ccc;
+    }
+    .controls-box h3 { font-size: 0.9rem; margin-bottom: 6px; }
+    #myControls { line-height: 1.6; }
+    kbd {
+      background: #eee;
+      border: 1px solid #bbb;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 0.78rem;
+    }
+    #localControlsHelp { display: none; }
+    .team-a { color: #c62828; }
+    .team-b { color: #1565c0; }
+    .help-small { font-size: 0.78rem; color: #555; margin-top: 8px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <h1>⚡ 피카츄배구 4인 (2 vs 2)</h1>
+
+  <div class="layout">
+    <div id="wrap">
+      <canvas id="game" width="900" height="500"></canvas>
+      <div id="hud">
+        <span id="scoreA">0</span>
+        <span id="scoreB">0</span>
+      </div>
+      <div id="overlay">
+        <h2 id="overlayTitle">피카츄배구 4인</h2>
+        <div id="overlayBody">
+          <p>첫 팀이 <strong>15점</strong>을 먼저 얻으면 승리</p>
+        </div>
+        <button type="button" class="btn" id="startBtn">로컬 시작</button>
+      </div>
+    </div>
+
+    <aside class="sidebar">
+      <div class="mode-tabs">
+        <button type="button" id="modeLocal" class="active">로컬 4인</button>
+        <button type="button" id="modeOnline">온라인</button>
+      </div>
+
+      <div id="gamePanel">
+        <p class="help-small">한 PC에서 키보드 4명이 함께 플레이합니다.</p>
+      </div>
+
+      <div id="lobbyPanel" class="hidden">
+        <label for="playerName">닉네임</label>
+        <input type="text" id="playerName" maxlength="16" placeholder="플레이어" />
+
+        <label for="serverHost">서버 주소 (IP:포트)</label>
+        <input type="text" id="serverHost" placeholder="192.168.0.10:3847" />
+        <button type="button" class="btn secondary" id="connectBtn" style="width:100%">접속</button>
+        <p id="netStatus" class="status">서버 미연결</p>
+
+        <p style="margin-top:12px;font-weight:600">캐릭터 슬롯</p>
+        <div id="slotPicker">
+          <button type="button" data-slot="1">P1 (팀A)</button>
+          <button type="button" data-slot="2">P2 (팀A)</button>
+          <button type="button" data-slot="3">P3 (팀B)</button>
+          <button type="button" data-slot="4">P4 (팀B)</button>
+        </div>
+
+        <p style="font-weight:600">접속자</p>
+        <ul id="lobbyList"></ul>
+        <p id="hostHint">서버를 실행한 PC가 방장입니다.</p>
+        <button type="button" class="btn hidden" id="hostStartBtn" style="width:100%">게임 시작 (방장)</button>
+
+        <p class="help-small">
+          <strong>실행:</strong> 방장 PC에서 <code>npm start</code> 후,
+          다른 PC는 방장 IP로 접속 (예: <code>192.168.0.5:3847</code>).
+          방화벽에서 포트 <strong>3847</strong> 허용이 필요할 수 있습니다.
+        </p>
+      </div>
+
+      <div class="controls-box">
+        <h3>조작</h3>
+        <div id="myControls"></div>
+        <div id="localControlsHelp">
+          <span class="team-a"><strong>팀 A</strong></span><br>
+          P1: <kbd>W</kbd><kbd>A</kbd><kbd>D</kbd><kbd>S</kbd> ·
+          P2: <kbd>T</kbd><kbd>F</kbd><kbd>H</kbd><kbd>G</kbd><br>
+          <span class="team-b"><strong>팀 B</strong></span><br>
+          P3: <kbd>↑</kbd><kbd>←</kbd><kbd>→</kbd><kbd>↓</kbd> ·
+          P4: <kbd>I</kbd><kbd>J</kbd><kbd>L</kbd><kbd>K</kbd>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module" src="main.mjs"></script>
+</body>
+</html>

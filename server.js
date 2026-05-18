@@ -271,7 +271,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-15p',
+    stability: '2026-05-15r',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -456,12 +456,24 @@ function canReceiveDeadChat(player) {
 }
 
 function broadcastDeadChatMessage(room, deadMsg) {
-  if (room.phase === PHASE.DAY_CHAT) {
-    pushChat(room, 'day', deadMsg);
-    broadcastToRoom(room, 'chatMessage', { channel: 'day', ...deadMsg });
-    return;
-  }
   broadcastToRoom(room, 'chatMessage', { channel: 'dead', ...deadMsg }, canReceiveDeadChat);
+}
+
+function getDayChatForViewer(room, viewer) {
+  const day = (room.chatLog.day || []).filter((m) => !m.isDead);
+  if (!viewer || !canReceiveDeadChat(viewer)) {
+    return day;
+  }
+  const dead = room.chatLog.dead || [];
+  const keys = new Set(day.map((m) => `${m.time}|${m.fromId}|${m.text}`));
+  const merged = [...day];
+  for (const m of dead) {
+    const key = `${m.time}|${m.fromId}|${m.text}`;
+    if (keys.has(key)) continue;
+    keys.add(key);
+    merged.push({ ...m, isDead: true });
+  }
+  return merged.sort((a, b) => (a.time || 0) - (b.time || 0));
 }
 
 function postBotDeadMessage(room, bot, text) {
@@ -2220,7 +2232,7 @@ function toClientState(room, viewerUserId, opts = {}) {
       : null,
     lobbyChat: includeChat && room.phase === PHASE.LOBBY ? room.chatLog.lobby.slice(-STATE_SYNC_CHAT_LIMIT) : undefined,
     dayChat: includeChat && room.phase !== PHASE.LOBBY && room.game
-      ? getMergedDayChatLog(room).slice(-STATE_SYNC_CHAT_LIMIT)
+      ? getDayChatForViewer(room, viewer).slice(-STATE_SYNC_CHAT_LIMIT)
       : undefined,
     deadChat: includeChat && viewer && room.game && canReceiveDeadChat(viewer)
       ? room.chatLog.dead.slice(-STATE_SYNC_CHAT_LIMIT)
@@ -2490,15 +2502,7 @@ function runBotActions(room) {
   }
 
   if (room.phase === PHASE.EXECUTION_VOTE) {
-    const candidate = getPlayerById(room, g.executionCandidateId);
-    bots.forEach((bot) => {
-      if (bot.id === g.executionCandidateId) return;
-      if (g.executionVotes[bot.id]) return;
-      if (candidate) {
-        g.executionVotes[bot.id] = botBrain.pickBotExecutionVote(room, bot, candidate);
-      }
-    });
-    console.log('[BOT] execution votes applied (m42)');
+    runBotExecutionVotes(room);
   }
 
   if (room.phase === PHASE.LAST_WORDS) {
@@ -2725,10 +2729,38 @@ function startLastWords(room, candidateId) {
   setPhase(room, PHASE.LAST_WORDS, TIMERS[PHASE.LAST_WORDS]);
 }
 
+function runBotExecutionVotes(room) {
+  if (room.phase !== PHASE.EXECUTION_VOTE || !room.game) return;
+  const g = room.game;
+  const candidate = getPlayerById(room, g.executionCandidateId);
+  if (!candidate) return;
+  const bots = getBots(room).filter((p) => p.alive);
+  let voted = 0;
+  for (const bot of bots) {
+    if (bot.id === g.executionCandidateId) continue;
+    if (g.executionVotes[bot.id]) continue;
+    g.executionVotes[bot.id] = botBrain.pickBotExecutionVote(room, bot, candidate);
+    voted++;
+  }
+  if (voted > 0) {
+    console.log(`[BOT] execution votes: ${voted} bots (candidate=${candidate.nickname})`);
+    broadcastState(room);
+  }
+}
+
+function scheduleBotExecutionVotes(room) {
+  if (!hasBots(room)) return;
+  runBotExecutionVotes(room);
+  [1200, 2800, 4200].forEach((ms) => {
+    scheduleRoomTask(room, () => runBotExecutionVotes(room), ms);
+  });
+}
+
 function startExecutionVote(room) {
   room.game.executionVotes = {};
   setPhase(room, PHASE.EXECUTION_VOTE, TIMERS[PHASE.EXECUTION_VOTE]);
   broadcastAnimation(room, 'anim-execution');
+  scheduleBotExecutionVotes(room);
 }
 
 function endGame(room, win) {
@@ -3820,20 +3852,6 @@ function pushChat(room, channel, entry) {
   if (!room.chatLog[channel]) room.chatLog[channel] = [];
   room.chatLog[channel].push(entry);
   if (room.chatLog[channel].length > 200) room.chatLog[channel].shift();
-}
-
-function getMergedDayChatLog(room) {
-  const day = room.chatLog.day || [];
-  const dead = room.chatLog.dead || [];
-  const keys = new Set(day.map(m => `${m.time}|${m.fromId}|${m.text}`));
-  const merged = [...day];
-  for (const m of dead) {
-    const key = `${m.time}|${m.fromId}|${m.text}`;
-    if (keys.has(key)) continue;
-    keys.add(key);
-    merged.push({ ...m, isDead: true });
-  }
-  return merged.sort((a, b) => (a.time || 0) - (b.time || 0));
 }
 
 function pushLobbySystemMessage(room, text) {

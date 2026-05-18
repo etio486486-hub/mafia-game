@@ -14,7 +14,13 @@ import {
 import type { GameState } from "../src/types/game";
 
 const PORT = Number(process.env.PORT) || 3333;
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "http://localhost:3000";
+const FRONTEND_ORIGINS = (
+  process.env.FRONTEND_ORIGIN ??
+  "http://localhost:3000,http://127.0.0.1:3000"
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 type Room = {
   code: string;
@@ -73,7 +79,7 @@ function emitLobby(code: string) {
 const app = express();
 app.use(
   cors({
-    origin: FRONTEND_ORIGIN,
+    origin: FRONTEND_ORIGINS,
     credentials: true,
   }),
 );
@@ -84,7 +90,7 @@ app.get("/health", (_req, res) => {
 const httpServer: HttpServer = createServer(app);
 io = new Server(httpServer, {
   cors: {
-    origin: FRONTEND_ORIGIN,
+    origin: FRONTEND_ORIGINS,
     methods: ["GET", "POST"],
   },
 });

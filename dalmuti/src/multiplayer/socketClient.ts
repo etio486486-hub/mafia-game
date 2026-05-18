@@ -15,6 +15,31 @@ const WS_URL =
 
 let socket: Socket | null = null;
 
+export function getWsUrl(): string {
+  return WS_URL;
+}
+
+/** HTTP /health — Socket 서버가 켜져 있는지 확인 */
+export async function pingGameServer(): Promise<boolean> {
+  try {
+    const res = await fetch(`${WS_URL}/health`, {
+      method: "GET",
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { ok?: boolean };
+    return data.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+export function buildInviteUrl(roomCode: string): string {
+  if (typeof window === "undefined") return "";
+  const code = roomCode.trim().toUpperCase();
+  return `${window.location.origin}${window.location.pathname}?room=${code}`;
+}
+
 /** 서버가 꺼져 있으면 emit ACK가 오지 않아 멈추는 것을 막기 위함 */
 function waitForSocketConnect(s: Socket, ms = 12000): Promise<void> {
   return new Promise((resolve, reject) => {

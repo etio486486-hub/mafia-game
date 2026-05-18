@@ -643,7 +643,13 @@ function renderFromState() {
   renderM42Chrome();
   if (state.phaseRemainingMs != null) startLocalTimer(state.phaseRemainingMs);
 
-  if (Array.isArray(state.dayChat)) chatStore.day = state.dayChat;
+  if (Array.isArray(state.dayChat)) {
+    const me = state.players.find(p => p.id === state.myPlayerId);
+    const seeDeadInDay = me && ((me.alive && state.myRole === ROLE.MEDIUM) || !me.alive);
+    chatStore.day = seeDeadInDay
+      ? state.dayChat
+      : state.dayChat.filter((m) => !m.isDead);
+  }
   if (Array.isArray(state.deadChat)) chatStore.dead = state.deadChat;
   if (Array.isArray(state.mafiaChat)) chatStore.mafia = state.mafiaChat;
   if (Array.isArray(state.cultChat)) chatStore.cult = state.cultChat;
@@ -1909,9 +1915,8 @@ function ingestDeadChatMessage(data) {
   chatStore.dead.push(data);
   const me = state && state.players.find(p => p.id === state.myPlayerId);
   const mediumAlive = me && me.alive && state.myRole === ROLE.MEDIUM;
-  const mergeToDay = data.channel === 'day' || data.isDead
-    || (state && state.phase === 'day_chat')
-    || mediumAlive;
+  const deadViewer = me && !me.alive;
+  const mergeToDay = mediumAlive || (deadViewer && state && state.phase === 'day_chat');
   if (mergeToDay) {
     if (!chatStore.day) chatStore.day = [];
     chatStore.day.push({ ...data, isDead: true });
@@ -1924,8 +1929,14 @@ socket.on('chatMessage', (data) => {
   const ch = data.channel === 'lastWords' ? 'lastWords' : data.channel;
   if (ch === 'day') {
     if (!chatStore.day) chatStore.day = [];
-    chatStore.day.push(data);
-    if (activeChatChannel === 'day') queueChatRender('day');
+    const me = state && state.players.find(p => p.id === state.myPlayerId);
+    const allowDeadInDay = data.isDead && me && (
+      (me.alive && state.myRole === ROLE.MEDIUM) || !me.alive
+    );
+    if (!data.isDead || allowDeadInDay) {
+      chatStore.day.push(data);
+      if (activeChatChannel === 'day') queueChatRender('day');
+    }
     return;
   }
   if (ch === 'dead') {

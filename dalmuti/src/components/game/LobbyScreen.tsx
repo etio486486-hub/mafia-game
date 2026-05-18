@@ -5,9 +5,12 @@ import { MVP_PLAYER_COUNT } from "@/lib/constants";
 import { useGameStore } from "@/store/gameStore";
 import type { SeatConfig } from "@/types/game";
 import {
+  buildInviteUrl,
   createRoomOnline,
   disconnectOnline,
+  getWsUrl,
   joinRoomOnline,
+  pingGameServer,
   startOnlineGame,
   type RoomLobbyPayload,
 } from "@/multiplayer/socketClient";
@@ -27,12 +30,23 @@ function OnlineLobbySection() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isHost, setIsHost] = useState(false);
+  const [serverOk, setServerOk] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     const r = params.get("room");
     if (r) setJoinCode(r.toUpperCase());
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void pingGameServer().then((ok) => {
+      if (!cancelled) setServerOk(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const onLobby = (p: RoomLobbyPayload) => {
@@ -44,7 +58,11 @@ function OnlineLobbySection() {
     setError(null);
     setLoading(true);
     try {
-      await createRoomOnline(name.trim() || "호스트", onLobby);
+      const { roomCode: code } = await createRoomOnline(
+        name.trim() || "호스트",
+        onLobby,
+      );
+      setRoomCode(code);
       setIsHost(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "방 만들기 실패");
@@ -87,16 +105,22 @@ function OnlineLobbySection() {
     }
   };
 
-  const inviteUrl =
-    typeof window !== "undefined" && roomCode
-      ? `${window.location.origin}${window.location.pathname}?room=${roomCode}`
-      : "";
+  const inviteUrl = roomCode ? buildInviteUrl(roomCode) : "";
 
   return (
     <div className="rounded-2xl border border-indigo-500/40 bg-indigo-950/30 p-5">
       <h2 className="text-lg font-semibold text-indigo-200">온라인 (4인)</h2>
       <p className="mt-1 text-xs text-slate-500">
-        서버: <code className="text-slate-400">npm run dev:all</code>
+        Socket 서버:{" "}
+        <code className="text-slate-400">{getWsUrl()}</code>
+        {serverOk === true && (
+          <span className="ml-2 text-emerald-400">● 연결됨</span>
+        )}
+        {serverOk === false && (
+          <span className="ml-2 text-red-400">
+            ● 꺼짐 — 터미널에서 npm run dev:all 실행
+          </span>
+        )}
       </p>
 
       <div className="mt-4 space-y-3">
