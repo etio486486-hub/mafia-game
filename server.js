@@ -13,6 +13,7 @@ const m42Bluff = require('./lib/m42-bluff');
 const policeFmt = require('./lib/police-report-format');
 const m42Cult = require('./lib/m42-cult');
 const chatSuspicion = require('./lib/bot-chat-suspicion');
+const mediumPurify = require('./lib/bot-medium-purify');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -288,7 +289,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-15z',
+    stability: '2026-05-16b',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -761,6 +762,10 @@ function findPlayersMentionedInText(room, text, { aliveOnly = true } = {}) {
   return mentioned;
 }
 
+function isMediumPurifyRequest(text) {
+  return mediumPurify.isMediumPurifyRequest(text);
+}
+
 function isPoliceReportRequest(text) {
   if (!text) return false;
   const raw = String(text);
@@ -1060,6 +1065,72 @@ function notifyPoliceNoIntel(room, police) {
     title: '조사 기록 없음',
     message: '밤에 대상을 고른 뒤 「마피아 조사」를 눌러야 합니다. 조사 후 낮에 경조결·조결을 채팅에 적으면 결과를 공개할 수 있습니다.'
   });
+}
+
+/** 「영매 성불」 등 채팅 요청 → 영매 봇이 의심 사망자 성불 후 결과 공개 */
+function runBotMediumPurifyFromChat(room, mediumBot) {
+  if (!room?.game || !mediumBot?.alive || mediumBot.role !== ROLE.MEDIUM) return;
+  if (room.phase !== PHASE.DAY_CHAT) return;
+
+  const na = room.game.nightActions;
+  if (!na) return;
+
+  const dead = Object.values(room.players).filter((p) => !p.alive);
+  if (!dead.length) {
+    postBotDayMessage(room, mediumBot, '지금 성불할 사망자가 없습니다.');
+    return;
+  }
+
+  if (na.mediumResolved) {
+    const known = mediumPurify.pickKnownDeadForAnnounce(room, mediumBot, voteFactHelpers);
+    if (known) {
+      const label = ROLE_LABELS[known.role] || known.role;
+      const line = mediumPurify.formatPurifyAnnounce(known.nickname, label);
+      postBotDayMessage(room, mediumBot, line);
+      voteIntel.ingestMediumPurifyReveal(room, known.id, known.role, botLearnRole);
+      return;
+    }
+    const next = mediumPurify.pickSuspiciousDeadTarget(room, mediumBot, voteFactHelpers);
+    postBotDayMessage(
+      room,
+      mediumBot,
+      next
+        ? `이번 밤 성불은 이미 사용했습니다. 다음 밤에 ${next.nickname}님부터 성불하겠습니다.`
+        : '이번 밤 성불은 이미 사용했습니다.'
+    );
+    return;
+  }
+
+  const target = mediumPurify.pickSuspiciousDeadTarget(room, mediumBot, voteFactHelpers);
+  if (!target) {
+    postBotDayMessage(room, mediumBot, '성불할 사망자가 없습니다.');
+    return;
+  }
+
+  na.mediumTarget = target.id;
+  deliverMediumResult(room, mediumBot, target.id);
+  if (!na.mediumResolved) {
+    postBotDayMessage(room, mediumBot, '성불에 실패했습니다. 사망자를 다시 확인하겠습니다.');
+    return;
+  }
+
+  const line = mediumPurify.formatPurifyAnnounce(
+    target.nickname,
+    ROLE_LABELS[target.role] || target.role
+  );
+  postBotDayMessage(room, mediumBot, line);
+  voteIntel.ingestMediumPurifyReveal(room, target.id, target.role, botLearnRole);
+  console.log(`[MEDIUM] bot purify chat ${mediumBot.nickname} → ${target.nickname} (${target.role})`);
+}
+
+function handleMediumPurifyChatRequest(room) {
+  if (!room.game || room.phase !== PHASE.DAY_CHAT || !hasBots(room)) return;
+
+  const mediumBot = getBots(room).find((b) => b.alive && b.role === ROLE.MEDIUM);
+  if (!mediumBot) return;
+
+  const delay = 700 + Math.floor(Math.random() * 900);
+  scheduleRoomTask(room, () => runBotMediumPurifyFromChat(room, mediumBot), delay);
 }
 
 /** 경조결 요청: 인간 경찰은 채팅 자동 게시 없음(비공개 안내·직접 입력만) */
@@ -1441,7 +1512,10 @@ const voteFactHelpers = {
   isMafiaTeam,
   isMafiaRole,
   getPlayerById,
-  getBotMind
+  getBotMind,
+  getChatMessages,
+  buildSuspicionScores,
+  botLearnRole
 };
 
 /** Day-chat accuse target: skill 팩트로 확인된 대상만 (추측 지목 금지) */
@@ -1712,6 +1786,9 @@ function postBotDayMessage(room, bot, text) {
     notePublicPoliceClaim(room, bot.id);
     voteIntel.ingestPoliceReportsFromDayChat(room, voteFactHelpers);
   }
+  if (mediumPurify.MEDIUM_ANNOUNCE_RE.test(text)) {
+    voteIntel.ingestMediumPurifyFromDayChat(room, voteFactHelpers, ROLE_LABELS);
+  }
   pushChat(room, 'day', msg);
   chatSuspicion.ingestDayMessage(room, msg, voteFactHelpers);
   broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
@@ -1802,6 +1879,11 @@ function scheduleBotReplyToHuman(room, opts = {}) {
 
   if (isRoleClaimRequest(triggerText) || isRoleRollCallQuestion(triggerText)) {
     scheduleBotRoleRollCall(room, triggerText);
+    return;
+  }
+
+  if (isMediumPurifyRequest(triggerText)) {
+    handleMediumPurifyChatRequest(room);
     return;
   }
 
@@ -1989,7 +2071,7 @@ function runBotNightActions(room) {
     if (bot.role === ROLE.REPORTER && !bot.reporterUsed && !actions.reporterTarget && room.game.nightIndex >= 2) {
       actions.reporterTarget = pickBotNightActionTarget(room, bot, ROLE.REPORTER);
     }
-    if (bot.role === ROLE.MEDIUM && !actions.mediumTarget) {
+    if (bot.role === ROLE.MEDIUM && !actions.mediumResolved && !actions.mediumTarget) {
       actions.mediumTarget = pickBotNightActionTarget(room, bot, ROLE.MEDIUM);
     }
     if (bot.role === ROLE.CULT_LEADER && m42Cult.canProselytizeTonight(room, bot)) {
@@ -4012,7 +4094,9 @@ function handleChat(room, socket, channel, text) {
     if (timeAdj && hasBots(room)) {
       scheduleBotTimeAdjustReaction(room, timeAdj);
     }
-    if (isPoliceReportRequest(msg.text)) {
+    if (isMediumPurifyRequest(msg.text)) {
+      handleMediumPurifyChatRequest(room);
+    } else if (isPoliceReportRequest(msg.text)) {
       handlePoliceReportRequest(room, player);
     } else if (hasBots(room) && !player.isBot) {
       scheduleBotReplyToHuman(room, { triggerText: msg.text });
