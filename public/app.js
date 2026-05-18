@@ -333,6 +333,7 @@ function handleRoomLost(wasInGame = false) {
   pendingRoomRejoin = null;
   rejoinAttempts = 0;
   localStorage.removeItem('mafia_roomCode');
+  sessionStorage.removeItem('mafia_in_room_session');
   stopKeepAlive();
   $('#reconnect-banner').hidden = true;
 
@@ -354,7 +355,9 @@ function requestSessionSync() {
   if (reconnectPaused || !socketConnected) return;
   rejoinAttempts = 0;
   const nick = getNickname() || localStorage.getItem('mafia_nickname') || '플레이어';
-  const savedRoom = localStorage.getItem('mafia_roomCode');
+  const savedRoom = sessionStorage.getItem('mafia_in_room_session')
+    ? localStorage.getItem('mafia_roomCode')
+    : null;
   if (savedRoom) {
     pendingRoomRejoin = savedRoom;
     socket.emit('resumeSession', { userID, nickname: nick });
@@ -399,6 +402,7 @@ function leaveRoom() {
   }
   socket.emit('leaveRoom');
   localStorage.removeItem('mafia_roomCode');
+  sessionStorage.removeItem('mafia_in_room_session');
   showToast('방에서 나갔습니다.');
 }
 
@@ -1699,12 +1703,13 @@ socket.on('sessionTaken', (data) => {
   reconnectPaused = true;
   stopKeepAlive();
   pendingRoomRejoin = null;
-  socket.disconnect();
-  showToast(data.message || '다른 탭에서 접속되어 연결이 종료되었습니다.');
+  sessionStorage.removeItem('mafia_in_room_session');
   localStorage.removeItem('mafia_roomCode');
+  showToast((data.message || '다른 탭에서 접속되었습니다.') + ' 이 탭은 닫거나 새로고침(F5) 후 다시 이용하세요.');
   state = { phase: 'none', serverInfo: state && state.serverInfo ? state.serverInfo : null };
   resetLobbyClientState();
   renderFromState();
+  updateLobbyConnectionUi();
 });
 
 socket.on('joinResult', (data) => {
@@ -1762,8 +1767,15 @@ socket.on('stateSync', (data) => {
   if (!Array.isArray(data.lastWordsChat) && savedChat.lastWords.length) chatStore.lastWords = savedChat.lastWords;
   if (!Array.isArray(data.lobbyChat) && savedChat.lobby.length) chatStore.lobby = savedChat.lobby;
 
-  if (data.roomCode) localStorage.setItem('mafia_roomCode', data.roomCode);
-  else localStorage.removeItem('mafia_roomCode');
+  if (data.roomCode) {
+    localStorage.setItem('mafia_roomCode', data.roomCode);
+    if (data.phase && data.phase !== 'none') {
+      sessionStorage.setItem('mafia_in_room_session', '1');
+    }
+  } else {
+    localStorage.removeItem('mafia_roomCode');
+    sessionStorage.removeItem('mafia_in_room_session');
+  }
   if (data.phase === 'none') {
     stopKeepAlive();
     resetLobbyClientState();

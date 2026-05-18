@@ -272,7 +272,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-15v',
+    stability: '2026-05-15w',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -1629,6 +1629,8 @@ function applyBotDayVote(room, bot) {
 
 function ingestAllDayChatSuspicion(room) {
   if (!room.game) return;
+  if (room.game._chatSuspicionVoteGen === room.game.dayIndex) return;
+  room.game._chatSuspicionVoteGen = room.game.dayIndex;
   for (const msg of getChatMessages(room, 'day')) {
     chatSuspicion.ingestDayMessage(room, msg, voteFactHelpers);
   }
@@ -3565,8 +3567,33 @@ function tryResumeSession(socket) {
   }
 
   const room = rooms.get(sess.roomCode);
-  const player = (sess.playerId && room.players[sess.playerId])
+  let player = (sess.playerId && room.players[sess.playerId])
     || getPlayerByUserId(room, socket.userID);
+
+  if (!player && room.phase === PHASE.LOBBY) {
+    const playerId = randomUUID();
+    room.players[playerId] = {
+      id: playerId,
+      userID: socket.userID,
+      nickname: socket.nickname || sess.nickname || '플레이어',
+      role: null,
+      alive: true,
+      connected: true,
+      soldierShieldUsed: false,
+      reporterUsed: false,
+      joinedMafiaChat: false,
+      joinedCult: false,
+      disconnectTimer: null,
+      isBot: false,
+      timeShortened: false,
+      timeIncreased: false
+    };
+    player = room.players[playerId];
+    sess.playerId = playerId;
+    pushLobbySystemMessage(room, `${player.nickname}님이 다시 입장했습니다.`);
+    console.log(`[SESSION] userID=${socket.userID} re-admitted to lobby ${room.code}`);
+  }
+
   if (!player) {
     sess.roomCode = null;
     sess.playerId = null;
@@ -3687,22 +3714,8 @@ function handleDisconnect(socket) {
     const latest = sessions.get(userID);
     if (latest && latest.socketId) return;
 
-    if (room.phase !== PHASE.LOBBY && room.phase !== PHASE.GAME_OVER) {
-      console.log(`[SESSION] userID=${userID} offline during game, slot kept`);
-      return;
-    }
-
-    delete room.players[player.id];
-    if (room.hostUserId === userID) {
-      const remaining = Object.values(room.players);
-      if (remaining.length > 0) room.hostUserId = remaining[0].userID;
-    }
-    if (Object.keys(room.players).length === 0) {
-      rooms.delete(room.code);
-    } else {
-      broadcastState(room);
-    }
-    console.log(`[SESSION] userID=${userID} removed after grace period`);
+    console.log(`[SESSION] userID=${userID} offline, slot kept (phase=${room.phase})`);
+    broadcastState(room);
   }, GRACE_PERIOD_MS);
 
   console.log(`[SESSION] userID=${userID} disconnected, grace period started`);
@@ -4280,5 +4293,5 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`  Motion art: ${motionReady}/${MOTION_ASSET_NAMES.length} (copied ${assets.motionsCopied})`);
   const botAi = botBrain.getStatus();
   console.log(`  Bot AI: ${botAi.mode}${botAi.llmEnabled ? ` (${botAi.model})` : ''}`);
-  console.log('  Stability patch: 2026-05-14b (light stateSync, rate limits)');
+  console.log('  Stability patch: 2026-05-15w (lobby reconnect, chat suspicion)');
 });
