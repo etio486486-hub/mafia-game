@@ -1189,13 +1189,16 @@ function renderPlayerGrid() {
         ? `<img src="${rolePortraitUrl(note.guessedRole)}" alt="${guessedLabel}" loading="lazy" onerror="this.replaceWith(document.createElement('span')).textContent='?'">`
         : '?');
 
-    const guessHtml = isTeammate
-      ? `<span class="slot-team-badge role-${p.role}" title="마피아 팀">${escapeHtml(p.roleLabel || '팀')}</span>`
-      : (isCultFollower
-        ? `<span class="slot-team-badge role-${p.role}" title="교주팀 신도">${escapeHtml(p.roleLabel || '신도')}</span>`
-        : (guessedLabel
-        ? `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(guessedLabel)}</button>`
-        : `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`));
+    let guessHtml;
+    if (isTeammate) {
+      guessHtml = `<span class="slot-team-badge role-${p.role}" title="마피아 팀">${escapeHtml(p.roleLabel || '팀')}</span>`;
+    } else if (isCultFollower) {
+      guessHtml = `<span class="slot-team-badge role-${p.role}" title="교주팀 신도">${escapeHtml(p.roleLabel || '신도')}</span>`;
+    } else if (guessedLabel) {
+      guessHtml = `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(guessedLabel)}</button>`;
+    } else {
+      guessHtml = `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`;
+    }
 
     const canSelect = canSelectPlayerSlot(p);
     if (state.myDayVoteTarget === p.id) cls += ' voted';
