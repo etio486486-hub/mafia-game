@@ -8,7 +8,7 @@ const roleDst = path.join(root, 'public', 'assets', 'roles');
 
 const roles = [
   'mafia', 'spy', 'madam', 'citizen', 'police', 'doctor',
-  'soldier', 'politician', 'medium', 'reporter', 'graverobber'
+  'soldier', 'politician', 'medium', 'reporter', 'graverobber', 'cult_leader'
 ];
 
 fs.mkdirSync(motionDst, { recursive: true });

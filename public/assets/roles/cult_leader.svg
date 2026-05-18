@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 520" width="400" height="520">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1028"/>
+      <stop offset="100%" stop-color="#0d0814"/>
+    </linearGradient>
+    <linearGradient id="robe" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4a2c6e"/>
+      <stop offset="100%" stop-color="#2d1848"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="28%" r="45%">
+      <stop offset="0%" stop-color="#c9a227" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#c9a227" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="400" height="520" fill="url(#bg)"/>
+  <ellipse cx="200" cy="140" rx="120" ry="90" fill="url(#halo)"/>
+  <ellipse cx="200" cy="95" rx="52" ry="58" fill="#3d2858"/>
+  <path d="M148 95 Q200 40 252 95 L240 130 Q200 110 160 130 Z" fill="#2a1a3d"/>
+  <rect x="118" y="155" width="164" height="220" rx="28" fill="url(#robe)"/>
+  <path d="M90 175 L118 165 L118 340 L75 355 Z" fill="#3a2458"/>
+  <path d="M310 175 L282 165 L282 340 L325 355 Z" fill="#3a2458"/>
+  <circle cx="175" cy="210" r="8" fill="#e8d48a"/>
+  <circle cx="225" cy="210" r="8" fill="#e8d48a"/>
+  <path d="M185 248 Q200 262 215 248" stroke="#c9a227" stroke-width="3" fill="none"/>
+  <text x="200" y="420" text-anchor="middle" fill="#c9a227" font-size="36" font-family="serif" font-weight="bold">Pü</text>
+  <text x="200" y="458" text-anchor="middle" fill="#9a8ab0" font-size="18" font-family="sans-serif">Cult Leader</text>
+</svg>

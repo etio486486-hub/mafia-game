@@ -333,7 +333,6 @@ function handleRoomLost(wasInGame = false) {
   pendingRoomRejoin = null;
   rejoinAttempts = 0;
   localStorage.removeItem('mafia_roomCode');
-  sessionStorage.removeItem('mafia_in_room_session');
   stopKeepAlive();
   $('#reconnect-banner').hidden = true;
 
@@ -355,9 +354,7 @@ function requestSessionSync() {
   if (reconnectPaused || !socketConnected) return;
   rejoinAttempts = 0;
   const nick = getNickname() || localStorage.getItem('mafia_nickname') || '플레이어';
-  const savedRoom = sessionStorage.getItem('mafia_in_room_session')
-    ? localStorage.getItem('mafia_roomCode')
-    : null;
+  const savedRoom = localStorage.getItem('mafia_roomCode');
   if (savedRoom) {
     pendingRoomRejoin = savedRoom;
     socket.emit('resumeSession', { userID, nickname: nick });
@@ -402,7 +399,6 @@ function leaveRoom() {
   }
   socket.emit('leaveRoom');
   localStorage.removeItem('mafia_roomCode');
-  sessionStorage.removeItem('mafia_in_room_session');
   showToast('방에서 나갔습니다.');
 }
 
@@ -752,7 +748,7 @@ function renderLobbyChat() {
   list.scrollTop = list.scrollHeight;
 }
 
-const ROLE_PORTRAIT_VERSION = '3';
+const ROLE_PORTRAIT_VERSION = '2';
 const UI_ASSET_VERSION = '3';
 const PHASE_ILLUSTRATION_COUNT = 5;
 
@@ -781,9 +777,7 @@ function buildPlayerAvatarInner(playerId) {
   const note = getPlayerNote(playerId);
   if (note.guessedRole) {
     const label = formatGuessedRoleLabel(note.guessedRole);
-    const guessed = note.guessedRole;
-    const initial = (ROLE_GUIDE[guessed] && ROLE_GUIDE[guessed].name.slice(0, 1)) || '?';
-    return `<img src="${rolePortraitUrl(guessed)}" alt="${escapeHtml(label)}" loading="lazy" onerror="${rolePortraitImgOnerror(initial, guessed)}">`;
+    return `<img src="${rolePortraitUrl(note.guessedRole)}" alt="${escapeHtml(label)}" loading="lazy" onerror="this.replaceWith(document.createElement('span')).textContent='?'">`;
   }
   return '?';
 }
@@ -859,16 +853,9 @@ function hideVoteResultsOverlay() {
   clearTimeout(voteResultsOverlayTimer);
 }
 
-function rolePortraitUrl(role, ext) {
+function rolePortraitUrl(role) {
   if (!role) return '';
-  const suffix = ext === 'svg' ? 'svg' : 'png';
-  return `/assets/roles/${role}.${suffix}?v=${ROLE_PORTRAIT_VERSION}`;
-}
-
-function rolePortraitImgOnerror(initial, role) {
-  const fb = rolePortraitUrl(role, 'svg');
-  return "if(this.dataset.fallback){this.outerHTML='<div class=\\'role-portrait-fallback\\'>" +
-    initial + "</div>'}else{this.dataset.fallback='1';this.src='" + fb + "'}";
+  return `/assets/roles/${role}.png?v=${ROLE_PORTRAIT_VERSION}`;
 }
 
 function buildRolePortraitHtml(role) {
@@ -879,7 +866,7 @@ function buildRolePortraitHtml(role) {
   const url = rolePortraitUrl(role);
   const initial = g.name.slice(0, 1);
   return `<img src="${url}" alt="${g.name}" loading="lazy" ` +
-    `onerror="${rolePortraitImgOnerror(initial, role)}">`;
+    `onerror="this.outerHTML='<div class=\\'role-portrait-fallback\\'>${initial}</div>'">`;
 }
 
 function renderM42Chrome() {
@@ -1098,10 +1085,9 @@ function buildRoleProfileCard(role, { mine = false, compact = false } = {}) {
   const g = ROLE_GUIDE[role];
   const cls = `role-profile-card role-${role}${mine ? ' is-mine' : ''}${compact ? ' compact' : ''}`;
   const url = rolePortraitUrl(role);
-  const initial = g.name.slice(0, 1);
   return `<div class="${cls}">` +
     `<img class="role-portrait-img" src="${url}" alt="${g.name}" loading="lazy" ` +
-    `onerror="${rolePortraitImgOnerror(initial, role)}">` +
+    `onerror="this.onerror=null;this.src='${url}&retry='+Date.now();">` +
     `<div class="role-portrait-label">${g.name}</div>` +
     `<div class="role-portrait-team">${g.team}</div>` +
     `</div>`;
@@ -1200,23 +1186,16 @@ function renderPlayerGrid() {
     const avatarInner = showRoleImg
       ? buildRolePortraitHtml(isSelf ? state.myRole : teammateRole)
       : (note.guessedRole
-        ? (() => {
-          const guessed = note.guessedRole;
-          const gi = (ROLE_GUIDE[guessed] && ROLE_GUIDE[guessed].name.slice(0, 1)) || '?';
-          return `<img src="${rolePortraitUrl(guessed)}" alt="${guessedLabel}" loading="lazy" onerror="${rolePortraitImgOnerror(gi, guessed)}">`;
-        })()
+        ? `<img src="${rolePortraitUrl(note.guessedRole)}" alt="${guessedLabel}" loading="lazy" onerror="this.replaceWith(document.createElement('span')).textContent='?'">`
         : '?');
 
-    let guessHtml;
-    if (isTeammate) {
-      guessHtml = `<span class="slot-team-badge role-${p.role}" title="마피아 팀">${escapeHtml(p.roleLabel || '팀')}</span>`;
-    } else if (isCultFollower) {
-      guessHtml = `<span class="slot-team-badge role-${p.role}" title="교주팀 신도">${escapeHtml(p.roleLabel || '신도')}</span>`;
-    } else if (guessedLabel) {
-      guessHtml = `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(guessedLabel)}</button>`;
-    } else {
-      guessHtml = `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`;
-    }
+    const guessHtml = isTeammate
+      ? `<span class="slot-team-badge role-${p.role}" title="마피아 팀">${escapeHtml(p.roleLabel || '팀')}</span>`
+      : (isCultFollower
+        ? `<span class="slot-team-badge role-${p.role}" title="교주팀 신도">${escapeHtml(p.roleLabel || '신도')}</span>`
+        : (guessedLabel
+        ? `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(guessedLabel)}</button>`
+        : `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`));
 
     const canSelect = canSelectPlayerSlot(p);
     if (state.myDayVoteTarget === p.id) cls += ' voted';
@@ -1387,9 +1366,7 @@ function renderActionPanel() {
     if (state.myPlayerId === state.executionCandidateId) {
       hint.textContent = '처형 후보자는 찬반 투표에 참여할 수 없습니다.';
     } else if (state.myExecutionVote) {
-      hint.textContent = state.myExecutionVote === 'yes'
-        ? '찬반 투표: 찬성 (처형 찬성)'
-        : '찬반 투표: 반대 (처형 반대)';
+      hint.textContent = '찬반 투표를 완료했습니다.';
     } else {
       hint.textContent = '찬반 투표 팝업에서 선택하세요.';
     }
@@ -1515,21 +1492,11 @@ function dismissGameOverlays() {
   if (typeof clearMotionQueue === 'function') clearMotionQueue();
 }
 
-let pendingExecutionVote = null;
-
 function submitExecutionVote(vote) {
-  if (!state || state.phase !== 'execution_vote') return;
-  if (state.myPlayerId === state.executionCandidateId) return;
-  if (state.myExecutionVote) {
-    showToast(state.myExecutionVote === 'yes' ? '이미 찬성했습니다.' : '이미 반대했습니다.');
-    return;
-  }
-  if (pendingExecutionVote) return;
-  pendingExecutionVote = vote;
   socket.emit('executionVote', { vote });
   runAnimation('anim-execution');
   hideExecutionVoteOverlay();
-  showToast(vote === 'yes' ? '찬성 제출 중…' : '반대 제출 중…');
+  showToast(vote === 'yes' ? '찬성했습니다.' : '반대했습니다.');
 }
 
 function updateChatTabs() {
@@ -1717,13 +1684,12 @@ socket.on('sessionTaken', (data) => {
   reconnectPaused = true;
   stopKeepAlive();
   pendingRoomRejoin = null;
-  sessionStorage.removeItem('mafia_in_room_session');
+  socket.disconnect();
+  showToast(data.message || '다른 탭에서 접속되어 연결이 종료되었습니다.');
   localStorage.removeItem('mafia_roomCode');
-  showToast((data.message || '다른 탭에서 접속되었습니다.') + ' 이 탭은 닫거나 새로고침(F5) 후 다시 이용하세요.');
   state = { phase: 'none', serverInfo: state && state.serverInfo ? state.serverInfo : null };
   resetLobbyClientState();
   renderFromState();
-  updateLobbyConnectionUi();
 });
 
 socket.on('joinResult', (data) => {
@@ -1765,15 +1731,6 @@ socket.on('stateSync', (data) => {
     lobby: chatStore.lobby
   };
   state = data;
-  if (pendingExecutionVote && data.myExecutionVote) {
-    const label = data.myExecutionVote === 'yes' ? '찬성' : '반대';
-    if (data.myExecutionVote !== pendingExecutionVote) {
-      showToast(`서버에 ${label}으로 기록되었습니다. (제출과 다를 수 있어 확인해 주세요)`);
-    } else {
-      showToast(`${label}으로 투표했습니다.`);
-    }
-    pendingExecutionVote = null;
-  }
   if (!Array.isArray(data.dayChat) && savedChat.day.length) chatStore.day = savedChat.day;
   if (!Array.isArray(data.mafiaChat) && savedChat.mafia.length) chatStore.mafia = savedChat.mafia;
   if (!Array.isArray(data.cultChat) && savedChat.cult.length) chatStore.cult = savedChat.cult;
@@ -1781,15 +1738,8 @@ socket.on('stateSync', (data) => {
   if (!Array.isArray(data.lastWordsChat) && savedChat.lastWords.length) chatStore.lastWords = savedChat.lastWords;
   if (!Array.isArray(data.lobbyChat) && savedChat.lobby.length) chatStore.lobby = savedChat.lobby;
 
-  if (data.roomCode) {
-    localStorage.setItem('mafia_roomCode', data.roomCode);
-    if (data.phase && data.phase !== 'none') {
-      sessionStorage.setItem('mafia_in_room_session', '1');
-    }
-  } else {
-    localStorage.removeItem('mafia_roomCode');
-    sessionStorage.removeItem('mafia_in_room_session');
-  }
+  if (data.roomCode) localStorage.setItem('mafia_roomCode', data.roomCode);
+  else localStorage.removeItem('mafia_roomCode');
   if (data.phase === 'none') {
     stopKeepAlive();
     resetLobbyClientState();

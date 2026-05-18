@@ -1,5 +1,5 @@
 /* Game motion / cutscene system (Mafia42-style) */
-const MOTION_ASSET_VERSION = '3';
+const MOTION_ASSET_VERSION = '4';
 
 const MOTION_SCENES = {
   vote_execution: '/assets/motions/vote_execution.png',
@@ -16,12 +16,22 @@ const MOTION_SCENES = {
   madam_silence: '/assets/motions/madam_silence.png',
   politician_immunity: '/assets/motions/politician_immunity.png',
   reporter_scoop: '/assets/motions/reporter_scoop.png',
-  graverobber_inherit: '/assets/motions/graverobber_inherit.png'
+  graverobber_inherit: '/assets/motions/graverobber_inherit.png',
+  cult_proselytize: '/assets/motions/cult_proselytize.svg'
+};
+
+const MOTION_SCENE_FALLBACK_SVG = {
+  cult_proselytize: '/assets/motions/cult_proselytize.svg'
 };
 
 function motionSceneUrl(type) {
   const base = MOTION_SCENES[type] || MOTION_SCENES.quiet_night;
   return base + '?v=' + MOTION_ASSET_VERSION;
+}
+
+function motionSceneFallback(type) {
+  const svg = MOTION_SCENE_FALLBACK_SVG[type];
+  return svg ? svg + '?v=' + MOTION_ASSET_VERSION : motionSceneUrl('quiet_night');
 }
 
 let motionQueue = [];
@@ -64,10 +74,11 @@ function showGameMotion(data) {
     if (!overlay) return resolve();
 
     const scene = motionSceneUrl(data.type);
+    const fallback = motionSceneFallback(data.type);
     overlay.innerHTML =
       '<div class="motion-panel">' +
       '<div class="motion-header">' + motionEscapeHtml(data.title || '') + '</div>' +
-      '<div class="motion-scene"><img src="' + scene + '" alt=""></div>' +
+      '<div class="motion-scene"><img src="' + scene + '" alt="" onerror="this.onerror=null;this.src=\'' + fallback + '\'"></div>' +
       '<div class="motion-message">' + motionEscapeHtml(data.message || '') + '</div>' +
       '<div class="motion-situation">' + motionEscapeHtml(data.situation || '') + '</div>' +
       '<button type="button" class="btn btn-secondary motion-close">확인</button>' +

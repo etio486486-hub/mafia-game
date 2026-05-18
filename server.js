@@ -41,13 +41,16 @@ function resolveMotionAsset(filename) {
 }
 
 function resolveRoleAsset(role) {
-  const filename = `${role}.png`;
-  const candidates = [
-    path.join(__dirname, 'public', 'assets', 'roles', filename),
-    path.join(__dirname, 'assets', 'roles', filename)
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
+  const base = String(role || '').replace(/\.(png|svg)$/i, '');
+  for (const ext of ['.png', '.svg']) {
+    const filename = `${base}${ext}`;
+    const candidates = [
+      path.join(__dirname, 'public', 'assets', 'roles', filename),
+      path.join(__dirname, 'assets', 'roles', filename)
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
   }
   return null;
 }
@@ -84,18 +87,27 @@ function ensurePublicAssets() {
     const dst = path.join(roleDstDir, `${role}.png`);
     const src = path.join(__dirname, 'assets', 'roles', `${role}.png`);
     if (copyIfExists(src, dst)) rolesCopied++;
+    const dstSvg = path.join(roleDstDir, `${role}.svg`);
+    const srcSvg = path.join(__dirname, 'assets', 'roles', `${role}.svg`);
+    if (copyIfExists(srcSvg, dstSvg)) rolesCopied++;
   }
 
   let motionsCopied = 0;
   for (const name of MOTION_ASSET_NAMES) {
     const dst = path.join(motionDstDir, name);
+    const base = name.replace(/\.png$/i, '');
     const sources = [
       path.join(__dirname, 'assets', 'motions', name),
-      path.join(__dirname, 'assets', name)
+      path.join(__dirname, 'assets', name),
+      path.join(__dirname, 'assets', 'motions', `${base}.svg`),
+      path.join(__dirname, 'assets', `${base}.svg`)
     ];
     for (const src of sources) {
       if (copyIfExists(src, dst)) { motionsCopied++; break; }
     }
+    const dstSvg = path.join(motionDstDir, `${base}.svg`);
+    const srcSvg = path.join(__dirname, 'assets', 'motions', `${base}.svg`);
+    if (copyIfExists(srcSvg, dstSvg)) motionsCopied++;
   }
 
   const PHASE_UI_VARIANTS = 5;
@@ -146,7 +158,11 @@ app.use((req, res, next) => {
 app.get('/assets/roles/:role', (req, res, next) => {
   const role = req.params.role.replace(/\.(png|svg)$/i, '');
   const file = resolveRoleAsset(role);
-  if (!file) return next();
+  if (!file) {
+    const svg = path.join(__dirname, 'public', 'assets', 'roles', `${role}.svg`);
+    if (fs.existsSync(svg)) return res.sendFile(svg);
+    return next();
+  }
   res.sendFile(file);
 });
 
@@ -272,7 +288,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-15w',
+    stability: '2026-05-15x',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -3110,11 +3126,12 @@ function resolveCultProselytize(room) {
 
   const roleLabel = ROLE_LABELS[target.role] || target.role;
   g.pendingAnnouncements.push('교주의 종소리가 울려퍼졌습니다.');
-  queueDawnMotion(room, {
+  emitMotionToUser(target.userID, {
     type: 'cult_proselytize',
     title: '포교',
-    message: '교주의 종소리가 울려퍼졌습니다.',
-    situation: '[상황] 교주가 포교에 성공한 경우'
+    message: '교주에게 포교당했습니다. 이제 신도입니다.',
+    situation: '[상황] 교주에게 포교당한 경우',
+    duration: 4200
   });
   broadcastToRoom(room, 'skillNotice', {
     scope: 'public',

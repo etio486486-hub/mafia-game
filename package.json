@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "prepare-motions": "node scripts/copy-motion-pngs.js",
-    "prepare-assets": "node scripts/copy-motion-pngs.js"
+    "prepare-assets": "node scripts/copy-motion-pngs.js && node scripts/ensure-cult-assets.js"
   },
   "dependencies": {
     "express": "^4.21.2",
