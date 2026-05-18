@@ -289,7 +289,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-16e',
+    stability: '2026-05-16f',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -1146,6 +1146,7 @@ function handlePoliceReportRequest(room, requester) {
   }
 
   scheduleMafiaHolgyeongOnReportRequest(room);
+  scheduleMafiaPoliceAllyClearOnReportRequest(room);
 
   const humanRequester = requester && requester.alive && requester.role === ROLE.POLICE && !requester.isBot
     ? requester
@@ -1232,6 +1233,35 @@ function scheduleMafiaHolgyeongOnReportRequest(room) {
     const text = m42Bluff.buildFakePoliceReportLine(room, bluffer, voteFactHelpers);
     if (text) postBotDayMessage(room, bluffer, text);
   }, 280 + Math.floor(Math.random() * 320));
+}
+
+/** 경조결·경찰조사 요청 시 생존 경찰이 있어도 마피아 봇이 가짜 조결로 동료 무죄 블러핑 */
+function scheduleMafiaPoliceAllyClearOnReportRequest(room) {
+  if (!room.game || room.phase !== PHASE.DAY_CHAT || !hasBots(room)) return;
+  const policeAlive = Object.values(room.players).some(
+    (p) => p.role === ROLE.POLICE && p.alive
+  );
+  if (!policeAlive) return;
+
+  const now = Date.now();
+  if (room._mafiaPoliceAllyBluffAt && now - room._mafiaPoliceAllyBluffAt < 9000) return;
+  room._mafiaPoliceAllyBluffAt = now;
+
+  const mafiaBots = getBots(room).filter(
+    (b) => b.alive && isMafiaTeam(b.role) && b.role !== ROLE.POLICE
+  );
+  if (!mafiaBots.length) return;
+
+  const bluffer = mafiaBots[Math.floor(Math.random() * mafiaBots.length)];
+  const delay = 1000 + Math.floor(Math.random() * 1800);
+  scheduleRoomTask(room, () => {
+    if (room.phase !== PHASE.DAY_CHAT) return;
+    const text = m42Bluff.buildFakePoliceReportLine(room, bluffer, voteFactHelpers, {
+      forceInnocent: true,
+      preferClearMafiaAlly: true
+    });
+    if (text) postBotDayMessage(room, bluffer, text);
+  }, delay);
 }
 
 function getDayMessages(room) {
@@ -1796,7 +1826,8 @@ function postBotDayMessage(room, bot, text) {
   console.log(`[BOT] ${bot.nickname} day-chat: ${text.slice(0, 40)}`);
   const timeAdj = parseTimeAdjustRequest(text);
   if (timeAdj) scheduleBotTimeAdjustReaction(room, timeAdj);
-  if (isRoleClaimRequest(text) || isRoleRollCallQuestion(text)) {
+  // 봇 직공 멘트에 "직공" 등이 들어가면 전원 롤콜이 재귀 예약되어 채팅이 도배됨 → 인간 발화만 롤콜 트리거
+  if (!bot.isBot && (isRoleClaimRequest(text) || isRoleRollCallQuestion(text))) {
     scheduleBotRoleRollCall(room, text, bot.id);
   }
 }
