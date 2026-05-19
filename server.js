@@ -284,7 +284,7 @@ const ROLE_LABELS = {
 
 const rooms = new Map();
 const sessions = new Map();
-const SERVER_STABILITY = '2026-05-18l';
+const SERVER_STABILITY = '2026-05-18m';
 
 app.get('/health', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -1940,7 +1940,25 @@ function scheduleBotDayVotes(room) {
 }
 
 function postBotDayMessage(room, bot, text, opts = {}) {
-  if (!text || !bot?.alive || room.phase !== PHASE.DAY_CHAT) return;
+  if (!text || !bot?.alive || room.phase !== PHASE.DAY_CHAT) {
+    if (opts.policeReportAck) {
+      // #region agent log
+      agentLog({
+        hypothesisId: 'L',
+        location: 'server.js:postBotDayMessage',
+        message: 'police ack post skipped',
+        runId: 'post-fix',
+        data: {
+          bot: bot?.nickname,
+          hasText: !!text,
+          alive: !!bot?.alive,
+          phase: room?.phase
+        }
+      });
+      // #endregion
+    }
+    return;
+  }
   if (!opts.policeReportAck && !canEmitRoomEvent(room, 'chat')) {
     console.warn(`[BOT] chat rate-limited room=${room.code}`);
     return;
@@ -2132,11 +2150,9 @@ function scheduleBotReplyToPoliceReport(room, reportMsg) {
   // #endregion
   if (!responders.length) return;
   clearPoliceAckTimers(room);
-  responders.forEach((bot, i) => {
-    const delayMs = 700 + i * 2000;
-    const timer = setTimeout(() => {
-      if (!rooms.has(room.code) || room.phase !== PHASE.DAY_CHAT) return;
-      let line = null;
+  const postPoliceAck = (bot, lineSource) => {
+    let line = buildPoliceAckFallback(room, reportMsg, parsed);
+    if (!line) {
       try {
         line = botBrain.generateRuleBased(room, bot, {
           triggerText: reportMsg.text,
@@ -2149,26 +2165,47 @@ function scheduleBotReplyToPoliceReport(room, reportMsg) {
           hypothesisId: 'C',
           location: 'server.js:policeAckTimer',
           message: 'ack generateRuleBased error',
-          data: { bot: bot.nickname, err: String(err.message || err) }
+          runId: 'post-fix',
+          data: { bot: bot.nickname, err: String(err.message || err), lineSource }
         });
         // #endregion
         console.warn('[BOT] police ack error', err.message);
+        line = buildPoliceAckFallback(room, reportMsg, parsed);
+      }
+    }
+    // #region agent log
+    agentLog({
+      hypothesisId: 'C',
+      location: 'server.js:policeAckTimer',
+      message: 'ack line ready',
+      runId: 'post-fix',
+      data: {
+        bot: bot.nickname,
+        lineSource,
+        hasLine: !!line,
+        preview: line ? String(line).slice(0, 60) : null
+      }
+    });
+    // #endregion
+    if (line) postBotDayMessage(room, bot, line, { policeReportAck: true });
+  };
+
+  responders.forEach((bot, i) => {
+    const delayMs = 400 + i * 2000;
+    const timer = setTimeout(() => {
+      if (!rooms.has(room.code) || room.phase !== PHASE.DAY_CHAT) {
+        // #region agent log
+        agentLog({
+          hypothesisId: 'L',
+          location: 'server.js:policeAckTimer',
+          message: 'ack timer skipped phase',
+          runId: 'post-fix',
+          data: { bot: bot.nickname, phase: room.phase, hasRoom: rooms.has(room.code) }
+        });
+        // #endregion
         return;
       }
-      // #region agent log
-      agentLog({
-        hypothesisId: 'C',
-        location: 'server.js:policeAckTimer',
-        message: 'ack line ready',
-        data: {
-          bot: bot.nickname,
-          hasLine: !!line,
-          preview: line ? String(line).slice(0, 60) : null
-        }
-      });
-      // #endregion
-      if (!line) line = buildPoliceAckFallback(room, reportMsg, parsed);
-      if (line) postBotDayMessage(room, bot, line, { policeReportAck: true });
+      postPoliceAck(bot, i === 0 ? 'primary' : 'follow');
     }, delayMs);
     if (!room._policeAckTimers) room._policeAckTimers = [];
     room._policeAckTimers.push(timer);
