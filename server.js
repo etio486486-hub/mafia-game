@@ -284,13 +284,14 @@ const ROLE_LABELS = {
 
 const rooms = new Map();
 const sessions = new Map();
+const SERVER_STABILITY = '2026-05-18l';
 
 app.get('/health', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-18k',
+    stability: SERVER_STABILITY,
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -2661,6 +2662,7 @@ function toClientState(room, viewerUserId, opts = {}) {
   return {
     roomCode: room.code,
     phase: room.phase,
+    serverStability: SERVER_STABILITY,
     rulesProfile: 'm42-classic',
     players,
     isHost: viewer && viewer.userID === room.hostUserId,
@@ -4826,13 +4828,13 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`  Motion art: ${motionReady}/${MOTION_ASSET_NAMES.length} (copied ${assets.motionsCopied})`);
   const botAi = botBrain.getStatus();
   console.log(`  Bot AI: ${botAi.mode}${botAi.llmEnabled ? ` (${botAi.model})` : ''}`);
-  console.log('  Stability patch: 2026-05-18k (police report ack)');
+  console.log(`  Stability patch: ${SERVER_STABILITY} (police report ack)`);
   // #region agent log
   agentLog({
     hypothesisId: 'init',
     location: 'server.js:listen',
     message: 'server started',
-    data: { stability: '2026-05-18k', port: PORT, logPath: require('./lib/debug-agent-log').LOG_PATH },
+    data: { stability: SERVER_STABILITY, port: PORT, logPath: require('./lib/debug-agent-log').LOG_PATH },
     runId: 'post-fix'
   });
   // #endregion
