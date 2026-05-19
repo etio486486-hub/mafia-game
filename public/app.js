@@ -1963,6 +1963,11 @@ socket.on('privateInfo', (data) => {
     if (state) {
       state.myRole = data.role;
       state.myRoleLabel = data.roleLabel || state.myRoleLabel;
+      if (data.type === 'inherit') {
+        state.reporterUsed = false;
+        state.policeResolved = false;
+        state.spyResolved = false;
+      }
       if (data.type === 'role') {
         resetPlayerNotesSession();
         localStorage.setItem(`mafia_notes_session_${state.roomCode}`, notesSessionKey);
