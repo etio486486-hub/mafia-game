@@ -8,6 +8,7 @@ const fs = require('fs');
 const botBrain = require('./lib/bot-brain');
 const voteFacts = require('./lib/bot-vote-facts');
 const voteIntel = require('./lib/bot-vote-intel');
+const { agentLog } = require('./lib/debug-agent-log');
 const botChatFilter = require('./lib/bot-chat-filter');
 const m42Bluff = require('./lib/m42-bluff');
 const policeFmt = require('./lib/police-report-format');
@@ -289,7 +290,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'mafia-game',
-    stability: '2026-05-18g',
+    stability: '2026-05-18k',
     botAi: botBrain.getStatus(),
     rooms: rooms.size,
     sessions: sessions.size,
@@ -452,8 +453,15 @@ function isActiveGame(room) {
   return !!(room && room.game && room.phase !== PHASE.GAME_OVER && !room.game.winner);
 }
 
+function clearPoliceAckTimers(room) {
+  if (!room?._policeAckTimers?.length) return;
+  for (const t of room._policeAckTimers) clearTimeout(t);
+  room._policeAckTimers = [];
+}
+
 function clearBotChatTimers(room) {
   if (!room) return;
+  clearPoliceAckTimers(room);
   if (room._botHumanReplyTimer) {
     clearTimeout(room._botHumanReplyTimer);
     room._botHumanReplyTimer = null;
@@ -599,22 +607,49 @@ function resetBotChatStats(room) {
   room.game.botChatStats = { count: 0, lastAt: 0 };
 }
 
-function canBotChatNow(room) {
+function canBotChatNow(room, ctx = {}) {
   if (!room || !room.game) return false;
+  const policeAck = !!(ctx && ctx.policeReportAck);
   if (room.botChatInFlight) {
-    const started = room._botChatStartedAt || 0;
-    if (started && Date.now() - started > 12000) {
-      console.warn(`[BOT] reset stuck botChatInFlight room=${room.code}`);
-      room.botChatInFlight = false;
+    if (policeAck) {
+      // 조결 확인 연쇄 응답은 inFlight와 별도로 허용
     } else {
-      return false;
+      const started = room._botChatStartedAt || 0;
+      if (started && Date.now() - started > 12000) {
+        console.warn(`[BOT] reset stuck botChatInFlight room=${room.code}`);
+        room.botChatInFlight = false;
+      } else {
+        return false;
+      }
     }
   }
+  if (policeAck) return true;
+
   const st = room.game.botChatStats || { count: 0, lastAt: 0 };
   room.game.botChatStats = st;
   const now = Date.now();
-  if (st.count >= BOT_CHAT.MAX_PER_DAY_PHASE) return false;
-  if (st.lastAt && now - st.lastAt < BOT_CHAT.MIN_GAP_MS) return false;
+  if (st.count >= BOT_CHAT.MAX_PER_DAY_PHASE) {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'F',
+      location: 'server.js:canBotChatNow',
+      message: 'blocked MAX_PER_DAY_PHASE',
+      data: { count: st.count, max: BOT_CHAT.MAX_PER_DAY_PHASE }
+    });
+    // #endregion
+    return false;
+  }
+  if (st.lastAt && now - st.lastAt < BOT_CHAT.MIN_GAP_MS) {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'F',
+      location: 'server.js:canBotChatNow',
+      message: 'blocked MIN_GAP_MS',
+      data: { gapMs: now - st.lastAt, minGap: BOT_CHAT.MIN_GAP_MS }
+    });
+    // #endregion
+    return false;
+  }
   return true;
 }
 
@@ -1903,9 +1938,9 @@ function scheduleBotDayVotes(room) {
   });
 }
 
-function postBotDayMessage(room, bot, text) {
+function postBotDayMessage(room, bot, text, opts = {}) {
   if (!text || !bot?.alive || room.phase !== PHASE.DAY_CHAT) return;
-  if (!canEmitRoomEvent(room, 'chat')) {
+  if (!opts.policeReportAck && !canEmitRoomEvent(room, 'chat')) {
     console.warn(`[BOT] chat rate-limited room=${room.code}`);
     return;
   }
@@ -1937,17 +1972,42 @@ function postBotDayMessage(room, bot, text) {
 
 async function runBotDayChat(room, ctx = {}) {
   if (room.phase !== PHASE.DAY_CHAT || !room.game) return;
-  if (!canBotChatNow(room)) return;
+  if (!ctx.policeReportAck && room.botChatInFlight) {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'E',
+      location: 'server.js:runBotDayChat',
+      message: 'skipped botChatInFlight',
+      data: { ctxKeys: Object.keys(ctx), phase: room.phase }
+    });
+    // #endregion
+    return;
+  }
+  if (!canBotChatNow(room, ctx)) {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'F',
+      location: 'server.js:runBotDayChat',
+      message: 'skipped canBotChatNow',
+      data: { ctxKeys: Object.keys(ctx), policeReportAck: !!ctx.policeReportAck }
+    });
+    // #endregion
+    return;
+  }
 
   const bots = getBots(room).filter(p => p.alive);
   if (!bots.length) return;
 
-  room.botChatInFlight = true;
-  room._botChatStartedAt = Date.now();
+  const lockChat = !ctx.policeReportAck;
+  if (lockChat) {
+    room.botChatInFlight = true;
+    room._botChatStartedAt = Date.now();
+  }
   try {
-    let bot;
+    let bot = ctx.forceBotId ? getPlayerById(room, ctx.forceBotId) : null;
+    if (bot && (!bot.alive || !bot.isBot)) bot = null;
     const trigger = ctx.triggerText || '';
-    if (m42Bluff.wantsMatgyeongAsk(trigger)) {
+    if (!bot && m42Bluff.wantsMatgyeongAsk(trigger)) {
       const mafiaBots = bots.filter(
         (b) => isMafiaTeam(b.role) && b.role !== ROLE.POLICE
           && m42Bluff.mayMafiaTeamBotBluffPolice(room, b, voteFactHelpers)
@@ -1956,7 +2016,7 @@ async function runBotDayChat(room, ctx = {}) {
       bot = mafiaBots.length
         ? shuffle(mafiaBots)[0]
         : (mafiaAny.length ? shuffle(mafiaAny)[0] : shuffle(bots)[0]);
-    } else if (ctx.policeReport && isPoliceReportRequest(trigger)) {
+    } else if (!bot && ctx.policeReport && isPoliceReportRequest(trigger, room)) {
       const mafiaBluffers = bots.filter(
         (b) => isMafiaTeam(b.role) && b.role !== ROLE.POLICE
           && m42Bluff.mayMafiaTeamBotBluffPolice(room, b, voteFactHelpers)
@@ -1964,26 +2024,40 @@ async function runBotDayChat(room, ctx = {}) {
       bot = mafiaBluffers.length
         ? shuffle(mafiaBluffers)[0]
         : (bots.find((p) => p.role === ROLE.POLICE) || shuffle(bots)[0]);
-    } else {
+    } else if (!bot) {
       bot = shuffle(bots)[0];
     }
     const text = await Promise.race([
       botBrain.generateBotChat(room, bot, ctx),
       new Promise((resolve) => setTimeout(() => resolve(null), 9000))
     ]);
+    // #region agent log
+    agentLog({
+      hypothesisId: 'C',
+      location: 'server.js:runBotDayChat',
+      message: 'bot chat result',
+      data: {
+        bot: bot?.nickname,
+        policeReportAck: !!ctx.policeReportAck,
+        hasText: !!text,
+        textPreview: text ? String(text).slice(0, 60) : null,
+        trigger: String(trigger).slice(0, 60)
+      }
+    });
+    // #endregion
     if (!text) {
       const fallback = botBrain.generateRuleBased
         ? botBrain.generateRuleBased(room, bot, ctx)
         : null;
-      if (fallback) postBotDayMessage(room, bot, fallback);
+      if (fallback) postBotDayMessage(room, bot, fallback, { policeReportAck: !!ctx.policeReportAck });
       return;
     }
-    postBotDayMessage(room, bot, text);
+    postBotDayMessage(room, bot, text, { policeReportAck: !!ctx.policeReportAck });
   } catch (err) {
     console.warn('[BOT] day-chat error', err.message);
-    room.botChatInFlight = false;
+    if (lockChat) room.botChatInFlight = false;
   } finally {
-    room.botChatInFlight = false;
+    if (lockChat) room.botChatInFlight = false;
   }
 }
 
@@ -2015,19 +2089,88 @@ function scheduleBotRoleRollCall(room, triggerText, excludeBotId = null) {
   });
 }
 
-/** 인간 경찰 조결 공개 후 다른 봇이 따라 말하도록 */
+function buildPoliceAckFallback(room, reportMsg, parsed) {
+  const speaker = getPlayerById(room, reportMsg?.fromId);
+  if (!speaker || !parsed) return null;
+  const who = speaker.role === ROLE.POLICE
+    ? (speaker.nickname || '경찰')
+    : (speaker.nickname || '플레이어');
+  if (parsed.mafia?.length) {
+    const t = parsed.mafia[0];
+    return `${who}님 조결 확인했습니다. ${t.nickname}님이 수상합니다.`;
+  }
+  if (parsed.innocent?.length) {
+    const n = parsed.innocent[0].nickname;
+    return `${who}님 조결대로 ${n}님은 일단 무죄로 보겠습니다.`;
+  }
+  return null;
+}
+
+/** 인간 경찰 조결 공개 후 다른 봇이 따라 말하도록 (generation 무관 setTimeout) */
 function scheduleBotReplyToPoliceReport(room, reportMsg) {
   if (!hasBots(room) || room.phase !== PHASE.DAY_CHAT || !reportMsg?.text) return;
-  const delays = [1400, 2800, 4200];
-  delays.forEach((base, i) => {
-    scheduleRoomTask(room, () => {
-      if (room.phase !== PHASE.DAY_CHAT) return;
-      runBotDayChat(room, {
-        triggerText: reportMsg.text,
-        policeReportAck: true,
-        reportFromId: reportMsg.fromId
+  const parsed = voteFacts.parsePoliceReportFromText(room, reportMsg.text);
+  if (!parsed.mafia.length && !parsed.innocent.length) return;
+  const responders = shuffle(
+    getBots(room).filter((b) => b.alive && b.id !== reportMsg.fromId)
+  ).slice(0, 3);
+  // #region agent log
+  agentLog({
+    hypothesisId: 'C',
+    location: 'server.js:scheduleBotReplyToPoliceReport',
+    message: 'schedule police report ack',
+    runId: 'post-fix',
+    data: {
+      text: String(reportMsg.text).slice(0, 80),
+      mafia: parsed.mafia.map((p) => p.nickname),
+      innocent: parsed.innocent.map((p) => p.nickname),
+      responders: responders.map((b) => b.nickname),
+      phase: room.phase
+    }
+  });
+  // #endregion
+  if (!responders.length) return;
+  clearPoliceAckTimers(room);
+  responders.forEach((bot, i) => {
+    const delayMs = 700 + i * 2000;
+    const timer = setTimeout(() => {
+      if (!rooms.has(room.code) || room.phase !== PHASE.DAY_CHAT) return;
+      let line = null;
+      try {
+        line = botBrain.generateRuleBased(room, bot, {
+          triggerText: reportMsg.text,
+          policeReportAck: true,
+          reportFromId: reportMsg.fromId
+        });
+      } catch (err) {
+        // #region agent log
+        agentLog({
+          hypothesisId: 'C',
+          location: 'server.js:policeAckTimer',
+          message: 'ack generateRuleBased error',
+          data: { bot: bot.nickname, err: String(err.message || err) }
+        });
+        // #endregion
+        console.warn('[BOT] police ack error', err.message);
+        return;
+      }
+      // #region agent log
+      agentLog({
+        hypothesisId: 'C',
+        location: 'server.js:policeAckTimer',
+        message: 'ack line ready',
+        data: {
+          bot: bot.nickname,
+          hasLine: !!line,
+          preview: line ? String(line).slice(0, 60) : null
+        }
       });
-    }, base + Math.floor(Math.random() * 500) + i * 80);
+      // #endregion
+      if (!line) line = buildPoliceAckFallback(room, reportMsg, parsed);
+      if (line) postBotDayMessage(room, bot, line, { policeReportAck: true });
+    }, delayMs);
+    if (!room._policeAckTimers) room._policeAckTimers = [];
+    room._policeAckTimers.push(timer);
   });
 }
 
@@ -4298,9 +4441,33 @@ function handleChat(room, socket, channel, text) {
     if (isPoliceSelfClaim(msg.text)) {
       notePublicPoliceClaim(room, player.id);
     }
-    const policeProviding = player.role === ROLE.POLICE
-      && (policeFmt.looksLikePoliceReport(msg.text)
-        || voteFacts.isPoliceReportProviding(msg.text, room));
+    const looksReport = policeFmt.looksLikePoliceReport(msg.text);
+    const providing = voteFacts.isPoliceReportProviding(msg.text, room);
+    const parsedReport = voteFacts.parsePoliceReportFromText(room, msg.text);
+    const policeProviding = player.role === ROLE.POLICE && (looksReport || providing);
+    const hasParsedVerdict = !!(parsedReport.mafia.length || parsedReport.innocent.length);
+    const scheduleAck = !player.isBot && hasBots(room) && hasParsedVerdict;
+    // #region agent log
+    agentLog({
+      hypothesisId: 'A',
+      location: 'server.js:dayChat',
+      message: 'day chat branch',
+      data: {
+        from: player.nickname,
+        role: player.role,
+        isBot: player.isBot,
+        text: String(msg.text).slice(0, 80),
+        looksReport,
+        providing,
+        policeProviding,
+        scheduleAck,
+        isRequest: isPoliceReportRequest(msg.text, room),
+        mafia: parsedReport.mafia.map((p) => p.nickname),
+        innocent: parsedReport.innocent.map((p) => p.nickname)
+      },
+      runId: 'post-fix'
+    });
+    // #endregion
     if (policeProviding) {
       notePublicPoliceClaim(room, player.id);
       voteIntel.publishPoliceIntelToPublic(room);
@@ -4308,20 +4475,30 @@ function handleChat(room, socket, channel, text) {
         voteIntel.ingestPoliceReportsFromDayChat(room, voteFactHelpers);
       }
       scheduleMafiaMatgyeongAfterReport(room, player.id);
-      if (!player.isBot && hasBots(room)) {
-        scheduleBotReplyToPoliceReport(room, msg);
+    }
+    if (scheduleAck) {
+      scheduleBotReplyToPoliceReport(room, msg);
+    }
+    if (!policeProviding) {
+      const timeAdj = parseTimeAdjustRequest(msg.text);
+      if (timeAdj && hasBots(room)) {
+        scheduleBotTimeAdjustReaction(room, timeAdj);
       }
-    }
-    const timeAdj = parseTimeAdjustRequest(msg.text);
-    if (timeAdj && hasBots(room)) {
-      scheduleBotTimeAdjustReaction(room, timeAdj);
-    }
-    if (isMediumPurifyRequest(msg.text)) {
-      handleMediumPurifyChatRequest(room);
-    } else if (isPoliceReportRequest(msg.text, room)) {
-      handlePoliceReportRequest(room, player);
-    } else if (hasBots(room) && !player.isBot) {
-      scheduleBotReplyToHuman(room, { triggerText: msg.text });
+      if (isMediumPurifyRequest(msg.text)) {
+        handleMediumPurifyChatRequest(room);
+      } else if (isPoliceReportRequest(msg.text, room)) {
+        // #region agent log
+        agentLog({
+          hypothesisId: 'D',
+          location: 'server.js:dayChat',
+          message: 'handlePoliceReportRequest',
+          data: { text: String(msg.text).slice(0, 80) }
+        });
+        // #endregion
+        handlePoliceReportRequest(room, player);
+      } else if (hasBots(room) && !player.isBot) {
+        scheduleBotReplyToHuman(room, { triggerText: msg.text });
+      }
     }
   } else if (channel === 'mafia') {
     if (room.phase !== PHASE.NIGHT || !player.alive) return reject(socket, '마피아 채팅 불가');
@@ -4649,5 +4826,14 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`  Motion art: ${motionReady}/${MOTION_ASSET_NAMES.length} (copied ${assets.motionsCopied})`);
   const botAi = botBrain.getStatus();
   console.log(`  Bot AI: ${botAi.mode}${botAi.llmEnabled ? ` (${botAi.model})` : ''}`);
-  console.log('  Stability patch: 2026-05-15w (lobby reconnect, chat suspicion)');
+  console.log('  Stability patch: 2026-05-18k (police report ack)');
+  // #region agent log
+  agentLog({
+    hypothesisId: 'init',
+    location: 'server.js:listen',
+    message: 'server started',
+    data: { stability: '2026-05-18k', port: PORT, logPath: require('./lib/debug-agent-log').LOG_PATH },
+    runId: 'post-fix'
+  });
+  // #endregion
 });
