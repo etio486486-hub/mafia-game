@@ -15,6 +15,8 @@ const policeFmt = require('./lib/police-report-format');
 const m42Cult = require('./lib/m42-cult');
 const chatSuspicion = require('./lib/bot-chat-suspicion');
 const mediumPurify = require('./lib/bot-medium-purify');
+const m42PoliceCitizen = require('./lib/m42-police-citizen');
+const m42Matclaim = require('./lib/m42-matclaim-playbook');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -32,12 +34,17 @@ httpServer.keepAliveTimeout = 120000;
 httpServer.headersTimeout = 125000;
 
 function resolveMotionAsset(filename) {
-  const candidates = [
-    path.join(__dirname, 'public', 'assets', 'motions', filename),
-    path.join(__dirname, 'assets', filename)
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
+  const base = String(filename || '').replace(/\.(png|svg)$/i, '');
+  for (const ext of ['.png', '.svg']) {
+    const name = `${base}${ext}`;
+    const candidates = [
+      path.join(__dirname, 'public', 'assets', 'motions', name),
+      path.join(__dirname, 'assets', 'motions', name),
+      path.join(__dirname, 'assets', name)
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return p;
+    }
   }
   return null;
 }
@@ -128,6 +135,10 @@ function ensurePublicAssets() {
     for (const src of sources) {
       if (copyIfExists(src, dst)) { uiCopied++; break; }
     }
+    const base = name.replace(/\.png$/i, '');
+    const dstSvg = path.join(uiDstDir, `${base}.svg`);
+    const srcSvg = path.join(__dirname, 'assets', 'ui', `${base}.svg`);
+    if (copyIfExists(srcSvg, dstSvg)) uiCopied++;
   }
 
   for (const [legacy, numbered] of [['day_dawn.png', 'day_dawn_1.png'], ['night_fall.png', 'night_fall_1.png']]) {
@@ -142,7 +153,17 @@ function ensurePublicAssets() {
   return { rolesCopied, motionsCopied, uiCopied };
 }
 
+function ensurePlaceholderAssets() {
+  try {
+    // eslint-disable-next-line global-require, import/no-dynamic-require
+    require('./scripts/ensure-placeholder-assets');
+  } catch (err) {
+    console.warn('[ASSETS] ensure-placeholder-assets:', err.message);
+  }
+}
+
 ensurePublicAssets();
+ensurePlaceholderAssets();
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
@@ -216,11 +237,59 @@ const MIN_PHASE_REMAINING_MS = 5000;
 
 /** Bot day-chat rate limits (prevents socket flood / disconnects) */
 const BOT_CHAT = {
-  MIN_GAP_MS: 14000,
-  MAX_PER_DAY_PHASE: 5,
-  HUMAN_REPLY_WAIT_MS: 9000,
-  SCHEDULED_SLOTS_MS: [18000, 75000]
+  MIN_GAP_MS: 3000,
+  MAX_GAP_MS: 5000,
+  MAX_PER_DAY_PHASE: 14,
+  HUMAN_REPLY_WAIT_MS: 3500,
+  SCHEDULED_SLOTS_MS: [12000, 28000, 45000, 62000]
 };
+
+/** 맞경·홀경 페어/맞박 — 큐 없이 즉시 (나머지 봇 채팅은 3~5초 간격) */
+function isMatgyeongFastBotChat(opts = {}) {
+  return !!(
+    opts.mafiaFakePolice
+    || opts.policeMatgyeongBicker
+    || opts._pairedHolgyeong
+  );
+}
+
+function botChatGapMs() {
+  return BOT_CHAT.MIN_GAP_MS + Math.floor(Math.random() * (BOT_CHAT.MAX_GAP_MS - BOT_CHAT.MIN_GAP_MS + 1));
+}
+
+function clearBotDayMessageQueue(room) {
+  if (!room) return;
+  room._botDayMsgQueue = [];
+  room._botDayMsgQueueBusy = false;
+}
+
+function pumpBotDayMessageQueue(room) {
+  if (!room || room._botDayMsgQueueBusy) return;
+  const q = room._botDayMsgQueue;
+  if (!q || !q.length) return;
+  if (room.phase !== PHASE.DAY_CHAT) {
+    clearBotDayMessageQueue(room);
+    return;
+  }
+  room._botDayMsgQueueBusy = true;
+  const item = q.shift();
+  const delay = botChatGapMs();
+  scheduleRoomTask(room, () => {
+    room._botDayMsgQueueBusy = false;
+    if (room.phase !== PHASE.DAY_CHAT) {
+      clearBotDayMessageQueue(room);
+      return;
+    }
+    postBotDayMessage(room, item.bot, item.text, { ...item.opts, _fromBotChatQueue: true });
+    pumpBotDayMessageQueue(room);
+  }, delay);
+}
+
+function enqueueBotDayMessage(room, bot, text, opts = {}) {
+  if (!room._botDayMsgQueue) room._botDayMsgQueue = [];
+  room._botDayMsgQueue.push({ bot, text, opts });
+  pumpBotDayMessageQueue(room);
+}
 
 const BOT_DEAD_CHAT = {
   MAX_PER_DEATH: 2,
@@ -284,7 +353,7 @@ const ROLE_LABELS = {
 
 const rooms = new Map();
 const sessions = new Map();
-const SERVER_STABILITY = '2026-05-19a';
+const SERVER_STABILITY = '2026-05-19m';
 
 app.get('/health', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -423,7 +492,7 @@ function getMafiaTeammatesForViewer(room, viewer) {
 }
 
 function emitMafiaTeamInfo(room, viewer) {
-  if (!viewer) return;
+  if (!viewer || !viewerOnMafiaSide(viewer)) return;
   const teammates = getMafiaTeammatesForViewer(room, viewer).map(p => ({
     id: p.id,
     nickname: p.nickname,
@@ -439,6 +508,33 @@ function emitMafiaTeamInfo(room, viewer) {
 function emitMafiaTeamInfoToAll(room) {
   for (const p of Object.values(room.players)) {
     emitMafiaTeamInfo(room, p);
+  }
+}
+
+function emitCultTeamInfo(room, viewer) {
+  if (!viewer || !isCultMember(viewer)) return;
+  const leader = Object.values(room.players).find(
+    (p) => p.role === ROLE.CULT_LEADER && p.alive
+  );
+  const followers = Object.values(room.players)
+    .filter((p) => p.id !== viewer.id && p.alive && isCultMember(p) && p.role !== ROLE.CULT_LEADER)
+    .map((p) => ({
+      id: p.id,
+      nickname: p.nickname,
+      roleLabel: ROLE_LABELS[p.role] || p.role
+    }));
+  const sess = sessions.get(viewer.userID);
+  if (!sess || !sess.socketId) return;
+  io.to(sess.socketId).emit('privateInfo', {
+    type: 'cultTeam',
+    leaderNickname: leader ? leader.nickname : null,
+    followers
+  });
+}
+
+function emitCultTeamInfoToAll(room) {
+  for (const p of Object.values(room.players)) {
+    if (isCultMember(p)) emitCultTeamInfo(room, p);
   }
 }
 
@@ -485,6 +581,7 @@ function clearMafiaFakeReportTimers(room) {
 
 function clearBotChatTimers(room) {
   if (!room) return;
+  clearBotDayMessageQueue(room);
   clearPoliceAckTimers(room);
   clearMafiaFakeReportTimers(room);
   if (room._botHumanReplyTimer) {
@@ -585,6 +682,9 @@ function markPlayerDead(room, player) {
   if (!player || !player.alive) return;
   const wasPolice = player.role === ROLE.POLICE;
   player.alive = false;
+  if (room.game && player.deadSinceNightIndex == null) {
+    player.deadSinceNightIndex = room.game.nightIndex || 0;
+  }
   if (player.isBot) scheduleBotDeadChatOnDeath(room, player);
   if (wasPolice) {
     scheduleRoomTask(room, () => {
@@ -999,6 +1099,8 @@ function scheduleBotTimeAdjustReaction(room, type) {
 function getDayVoteWeight(player) {
   if (!player || !player.alive) return 0;
   if (player.role === ROLE.POLITICIAN) return 2;
+  if (player.role === ROLE.CULT_LEADER) return 2;
+  if (player.joinedCult) return 2;
   return 1;
 }
 
@@ -1021,25 +1123,57 @@ function buildDayVoteTally(room) {
   return tally;
 }
 
-/** 공개 조결용: 이번 밤 수사 1건, 낮이면 가장 최근 수사 1건 */
+/** 공개 조결용: 현재 nightIndex 수사 1건만 (이전 밤 결과 재공표 방지) */
 function getPoliceIntelForReport(room, policeId) {
   const list = room.game?.policeIntel?.[policeId] || [];
   if (!list.length) return [];
 
   const idx = room.game?.nightIndex || 0;
-  const inNight = room.phase === PHASE.NIGHT;
   const thisNight = list
     .filter((r) => r.nightIndex === idx)
     .sort((a, b) => (b.at || 0) - (a.at || 0));
-  if (thisNight.length) return [thisNight[0]];
-
-  if (!inNight) {
-    const latest = [...list].sort(
-      (a, b) => (b.nightIndex || 0) - (a.nightIndex || 0) || (b.at || 0) - (a.at || 0)
-    )[0];
-    return latest ? [latest] : [];
+  if (thisNight.length) {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'Pc1',
+      location: 'server.js:getPoliceIntelForReport',
+      message: 'intel this night',
+      runId: 'police-fix',
+      data: {
+        policeId,
+        nightIndex: idx,
+        target: thisNight[0].targetName,
+        isMafia: thisNight[0].isMafia
+      }
+    });
+    // #endregion
+    return [thisNight[0]];
   }
+
+  // #region agent log
+  agentLog({
+    hypothesisId: 'Pc1',
+    location: 'server.js:getPoliceIntelForReport',
+    message: 'no intel this night (stale blocked)',
+    runId: 'police-fix',
+    data: { policeId, nightIndex: idx, phase: room.phase, historyCount: list.length }
+  });
+  // #endregion
   return [];
+}
+
+function hasPoliceReportInDayChat(room, policeId) {
+  if (!policeId) return false;
+  return getDayMessages(room).some(
+    (m) => m && m.fromId === policeId && m.text && policeFmt.looksLikePoliceReport(m.text)
+  );
+}
+
+function syncPolicePublicIntelAfterReport(room) {
+  voteIntel.publishPoliceIntelToPublic(room);
+  if (voteIntel.ingestPoliceReportsFromDayChat) {
+    voteIntel.ingestPoliceReportsFromDayChat(room, voteFactHelpers);
+  }
 }
 
 function policeReportDayKey(room, policeId) {
@@ -1068,7 +1202,32 @@ function recordPoliceInvestigation(room, policeId, targetId, isMafia) {
   const nightIndex = room.game.nightIndex || 0;
   const existing = list.find((r) => r.nightIndex === nightIndex);
   if (existing && existing.targetId === targetId && !!existing.isMafia === !!isMafia) {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'Pc2',
+      location: 'server.js:recordPoliceInvestigation',
+      message: 'duplicate investigation skipped',
+      runId: 'police-fix',
+      data: { policeId, targetId, nightIndex }
+    });
+    // #endregion
     return;
+  }
+  if (existing && existing.targetId !== targetId) {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'Pc2',
+      location: 'server.js:recordPoliceInvestigation',
+      message: 'same night target replaced',
+      runId: 'police-fix',
+      data: {
+        policeId,
+        nightIndex,
+        from: existing.targetId,
+        to: targetId
+      }
+    });
+    // #endregion
   }
   for (let i = list.length - 1; i >= 0; i--) {
     if (list[i].nightIndex === nightIndex) list.splice(i, 1);
@@ -1203,18 +1362,20 @@ function runBotMediumPurifyFromChat(room, mediumBot) {
   const na = room.game.nightActions;
   if (!na) return;
 
-  const dead = Object.values(room.players).filter((p) => !p.alive);
-  if (!dead.length) {
-    postBotDayMessage(room, mediumBot, '지금 성불할 사망자가 없습니다.');
+  const eligible = mediumPurify.listEligibleDead(room);
+  if (!eligible.length) {
+    postBotDayMessage(room, mediumBot, '지금 성불할 수 있는 사망자가 없습니다. 이번 밤에 죽은 분은 다음 밤부터 가능합니다.');
     return;
   }
 
   const known = mediumPurify.pickKnownDeadForAnnounce(room, mediumBot, voteFactHelpers);
   if (known) {
-    const label = ROLE_LABELS[known.role] || known.role;
+    const mind = getBotMind(room, mediumBot.id);
+    const role = (mind.knownRoles && mind.knownRoles[known.id]) || known.role;
+    const label = ROLE_LABELS[role] || role;
     const line = mediumPurify.formatPurifyAnnounce(known.nickname, label);
-    postBotDayMessage(room, mediumBot, line);
-    voteIntel.ingestMediumPurifyReveal(room, known.id, known.role, botLearnRole, mediumBot.id);
+    postBotDayMessage(room, mediumBot, line, { mediumRevealAck: true });
+    voteIntel.ingestMediumPurifyReveal(room, known.id, role, botLearnRole, mediumBot.id);
     return;
   }
 
@@ -1225,26 +1386,48 @@ function runBotMediumPurifyFromChat(room, mediumBot) {
       mediumBot,
       next
         ? `이번 밤 성불은 이미 사용했습니다. 다음 밤에 ${next.nickname}님부터 성불하겠습니다.`
-        : '이번 밤 성불은 이미 사용했습니다.'
+        : '이번 밤 성불은 이미 사용했습니다.',
+      { mediumRevealAck: true }
     );
     return;
   }
 
+  const next = mediumPurify.pickSuspiciousDeadTarget(room, mediumBot, voteFactHelpers);
   postBotDayMessage(
     room,
     mediumBot,
-    '성불은 밤에 한 번만 할 수 있습니다. 밤에 사망자를 선택해 성불해 주세요.'
+    next
+      ? `성불은 밤에 한 번만 가능합니다. 오늘 밤 ${next.nickname}님부터 성불하겠습니다.`
+      : '성불은 밤에 한 번만 할 수 있습니다. 밤에 사망자를 선택해 성불해 주세요.',
+    { mediumRevealAck: true }
   );
 }
 
-function handleMediumPurifyChatRequest(room) {
+function handleMediumPurifyChatRequest(room, requester) {
   if (!room.game || room.phase !== PHASE.DAY_CHAT || !hasBots(room)) return;
 
   const mediumBot = getBots(room).find((b) => b.alive && b.role === ROLE.MEDIUM);
-  if (!mediumBot) return;
+  if (mediumBot) {
+    const delay = 700 + Math.floor(Math.random() * 900);
+    scheduleRoomTask(room, () => runBotMediumPurifyFromChat(room, mediumBot), delay);
+    return;
+  }
 
-  const delay = 700 + Math.floor(Math.random() * 900);
-  scheduleRoomTask(room, () => runBotMediumPurifyFromChat(room, mediumBot), delay);
+  const humanMedium = Object.values(room.players).find(
+    (p) => p.alive && p.role === ROLE.MEDIUM && !p.isBot
+  );
+  if (!humanMedium) return;
+  const eligible = mediumPurify.listEligibleDead(room);
+  const bot = pickRandomCitizenBot(room, requester?.id);
+  if (!bot) return;
+  const reqName = requester?.nickname || '플레이어';
+  const line = eligible.length
+    ? `${reqName}님, ${humanMedium.nickname}님(영매)께 밤에 ${eligible[0].nickname}님부터 성불 부탁드립니다.`
+    : `${humanMedium.nickname}님(영매), 밤에 사망자 성불 부탁드립니다.`;
+  scheduleRoomTask(room, () => {
+    if (room.phase !== PHASE.DAY_CHAT) return;
+    postBotDayMessage(room, bot, line, { mediumRevealAck: true });
+  }, 800 + Math.floor(Math.random() * 600));
 }
 
 /** 경조결 요청: 인간 경찰은 채팅 자동 게시 없음(비공개 안내·직접 입력만) */
@@ -1300,12 +1483,24 @@ function handlePoliceReportRequest(room, requester) {
 function replyBotPoliceReport(room, policeBot) {
   if (!policeBot || !policeBot.alive || policeBot.role !== ROLE.POLICE || !policeBot.isBot) return;
   if (room.phase !== PHASE.DAY_CHAT) return;
-  if (hasPolicePublishedReportToday(room, policeBot.id)) return;
+  if (hasPolicePublishedReportToday(room, policeBot.id) || hasPoliceReportInDayChat(room, policeBot.id)) {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'Pc3',
+      location: 'server.js:replyBotPoliceReport',
+      message: 'duplicate public report blocked',
+      runId: 'police-fix',
+      data: { police: policeBot.nickname }
+    });
+    // #endregion
+    return;
+  }
   const report = buildPolicePublicReport(room, policeBot.id);
   const text = report && report.hasIntel && report.text
     ? report.text
     : '조결 요청 확인했습니다. 이번 밤 수사 기록이 없습니다. 밤에 대상을 지목해 주시면 낮에 조결로 말씀드리겠습니다.';
   postPoliceWithHolgyeongPair(room, policeBot, text);
+  if (report && report.hasIntel) syncPolicePublicIntelAfterReport(room);
   markPolicePublishedReport(room, policeBot.id);
 }
 
@@ -1488,6 +1683,9 @@ function postPoliceWithHolgyeongPair(room, policeSpeaker, policeText, opts = {})
         _pairedHolgyeong: true,
         _skipHolgyeongTrigger: true
       });
+      if (policeSpeaker.role === ROLE.POLICE && policeFmt.looksLikePoliceReport(policeText)) {
+        syncPolicePublicIntelAfterReport(room);
+      }
     }
   }
 
@@ -1757,6 +1955,146 @@ function getDayMessages(room) {
   return (room.chatLog && room.chatLog.day) ? room.chatLog.day : [];
 }
 
+/** 진경 봇: 낮에 조결·맞경·투표로 시민 주도 멘트를 주기적으로 올림 */
+/** 맞직 갈등 시 봇 티키타카·의심·검증 멘트 */
+function scheduleMatClaimDayPlaybook(room) {
+  if (!room.game || room.phase !== PHASE.DAY_CHAT || !hasBots(room)) return;
+  if (!m42Matclaim.hasActiveMatConflicts(room, voteFactHelpers)) return;
+
+  const waveKey = `d${room.game.dayIndex || 0}_n${room.game.nightIndex || 0}`;
+  if (!room._matClaimPlaybookWave) room._matClaimPlaybookWave = {};
+  if (room._matClaimPlaybookWave[waveKey]) return;
+  room._matClaimPlaybookWave[waveKey] = true;
+
+  const slots = [
+    { delay: 5400, kind: 'suspect' },
+    { delay: 10200, kind: 'tiki', round: 0 },
+    { delay: 15100, kind: 'tiki', round: 1 },
+    { delay: 20800, kind: 'suspect' },
+    { delay: 26500, kind: 'tiki', round: 2 },
+    { delay: 32200, kind: 'defend' }
+  ];
+
+  // #region agent log
+  agentLog({
+    hypothesisId: 'Mc3',
+    location: 'server.js:scheduleMatClaimDayPlaybook',
+    message: 'mat claim day playbook scheduled',
+    runId: 'matclaim',
+    data: {
+      conflicts: m42Matclaim.scanMatClaimConflicts(room, voteFactHelpers).map((c) => ({
+        role: c.role,
+        n: c.claimants.length,
+        names: c.claimants.map((x) => x.nickname)
+      }))
+    }
+  });
+  // #endregion
+
+  slots.forEach((slot, slotIdx) => {
+    scheduleRoomTask(room, () => {
+      if (room.phase !== PHASE.DAY_CHAT) return;
+      if (!m42Matclaim.hasActiveMatConflicts(room, voteFactHelpers)) return;
+
+      const bots = shuffle(getBots(room).filter((b) => b.alive)).slice(0, 2);
+      bots.forEach((bot, bi) => {
+        scheduleRoomTask(room, () => {
+          if (room.phase !== PHASE.DAY_CHAT || !bot.alive) return;
+          let line = null;
+          if (slot.kind === 'suspect') {
+            line = m42Matclaim.pickMatClaimSuspectLine(room, bot, voteFactHelpers, { round: slot.round });
+          } else if (slot.kind === 'tiki') {
+            line = m42Matclaim.pickMatClaimTikiTakaLine(room, bot, voteFactHelpers, {
+              round: slot.round,
+              conflictIndex: slotIdx + bi
+            });
+          } else {
+            line = m42Matclaim.pickMatClaimTikiTakaLine(room, bot, voteFactHelpers, { round: 3 })
+              || m42Matclaim.pickMatClaimSuspectLine(room, bot, voteFactHelpers);
+          }
+          if (line) postBotDayMessage(room, bot, line, { matClaimTikiTaka: true });
+        }, bi * (420 + Math.floor(Math.random() * 280)));
+      });
+    }, slot.delay + Math.floor(Math.random() * 450));
+  });
+}
+
+/** 맞직 주장자가 밤에 죽었을 때 성불·조사·취재 검증 유도 */
+function scheduleMatClaimDeathAnalysis(room) {
+  const report = room.game?.lastNightReport;
+  if (!report?.deaths?.length || !hasBots(room)) return;
+
+  const deathIds = report.deaths.map((d) => d.id || d);
+  const deadMat = m42Matclaim.findDeadMatClaimants(room, voteFactHelpers, deathIds);
+  if (!deadMat.length) return;
+
+  const waveKey = `d${room.game.dayIndex || 0}_dead`;
+  if (!room._matClaimDeathWave) room._matClaimDeathWave = {};
+  if (room._matClaimDeathWave[waveKey]) return;
+  room._matClaimDeathWave[waveKey] = true;
+
+  // #region agent log
+  agentLog({
+    hypothesisId: 'Mc2',
+    location: 'server.js:scheduleMatClaimDeathAnalysis',
+    message: 'dead mat claimant analysis scheduled',
+    runId: 'matclaim',
+    data: { dead: deadMat.map((d) => ({ name: d.name, matRoles: d.matRoles })) }
+  });
+  // #endregion
+
+  const bots = shuffle(getBots(room).filter((b) => b.alive));
+  deadMat.forEach((deadInfo, i) => {
+    const bot = bots[i % bots.length];
+    if (!bot) return;
+    scheduleRoomTask(room, () => {
+      if (room.phase !== PHASE.DAY_CHAT) return;
+      const line = m42Matclaim.pickDeadClaimantAnalysisLine(room, bot, voteFactHelpers, deadInfo);
+      if (line) postBotDayMessage(room, bot, line, { matClaimTikiTaka: true });
+    }, 2600 + i * (1900 + Math.floor(Math.random() * 500)));
+  });
+}
+
+function schedulePoliceCitizenDayPlaybook(room) {
+  if (!room.game || room.phase !== PHASE.DAY_CHAT || !hasBots(room)) return;
+  const policeBot = Object.values(room.players).find(
+    (p) => p && p.alive && p.isBot && p.role === ROLE.POLICE
+  );
+  if (!policeBot) return;
+
+  const waveKey = `d${room.game.dayIndex || 0}_n${room.game.nightIndex || 0}`;
+  if (!room._policeCitizenWave) room._policeCitizenWave = {};
+  if (room._policeCitizenWave[waveKey]) return;
+  room._policeCitizenWave[waveKey] = true;
+
+  const waves = [3800, 9200, 14800, 20500];
+  waves.forEach((baseMs, waveIndex) => {
+    scheduleRoomTask(room, () => {
+      if (room.phase !== PHASE.DAY_CHAT || !policeBot.alive) return;
+      if (waveIndex > 0 && !hasPolicePublishedReportToday(room, policeBot.id)
+        && !hasPoliceReportInDayChat(room, policeBot.id)) {
+        return;
+      }
+      const line = m42PoliceCitizen.pickScheduledCitizenLine(
+        room,
+        policeBot,
+        voteFactHelpers,
+        waveIndex
+      );
+      if (!line) return;
+      if (waveIndex === 0 && !hasPolicePublishedReportToday(room, policeBot.id)
+        && policeFmt.looksLikePoliceReport(line)) {
+        const report = buildPolicePublicReport(room, policeBot.id);
+        if (report && report.hasIntel && report.text) {
+          replyBotPoliceReport(room, policeBot);
+          return;
+        }
+      }
+      postBotDayMessage(room, policeBot, line, { policeCitizenLead: true });
+    }, baseMs + Math.floor(Math.random() * 500));
+  });
+}
+
 /** 낮 시작 직후 마피아 홀경 — 가짜 조결로 먼저 말함 (직공 메타 없음) */
 function scheduleMafiaEarlyPoliceBluff(room) {
   if (!room.game || room.phase !== PHASE.DAY_CHAT || !hasBots(room)) return;
@@ -2005,12 +2343,13 @@ function pickBotDayVoteTarget(room, bot) {
   }
 
   const factTarget = voteFacts.pickFactBasedDayVote(room, bot, voteFactHelpers);
-  if (factTarget && factTarget !== bot.id) {
-    if (!voteFacts.isPlayerCleared(room, bot, factTarget, voteFactHelpers)
-      && voteFacts.isStrongFactTarget(room, bot, factTarget, voteFactHelpers)) {
-      return factTarget;
-    }
+  if (factTarget && factTarget !== bot.id
+    && !voteFacts.isPlayerCleared(room, bot, factTarget, voteFactHelpers)) {
+    return factTarget;
   }
+
+  const consensus = voteFacts.pickConsensusDayVote(room, bot, voteFactHelpers);
+  if (consensus && consensus !== bot.id) return consensus;
 
   const chatKeyword = voteFacts.pickChatKeywordDayVote(room, bot, voteFactHelpers);
   if (chatKeyword && chatKeyword !== bot.id) {
@@ -2018,12 +2357,11 @@ function pickBotDayVoteTarget(room, bot) {
   }
 
   const fallback = voteFacts.pickFallbackDayVoteTarget(room, bot, voteFactHelpers);
-  if (fallback && fallback !== bot.id
-    && voteFacts.isStrongFactTarget(room, bot, fallback, voteFactHelpers)) {
+  if (fallback && fallback !== bot.id) {
     return fallback;
   }
 
-  return voteFacts.pickAmbiguousDayVote(room, bot, voteFactHelpers);
+  return voteFacts.pickConsolidatedDayVote(room, bot, voteFactHelpers);
 }
 
 function pickBotExecutionVoteFromFacts(room, bot, candidate) {
@@ -2038,7 +2376,8 @@ const voteFactHelpers = {
   getBotMind,
   getChatMessages,
   buildSuspicionScores,
-  botLearnRole
+  botLearnRole,
+  buildDayVoteTally
 };
 
 /** Day-chat accuse target: skill 팩트로 확인된 대상만 (추측 지목 금지) */
@@ -2065,19 +2404,26 @@ botBrain.configure({
   formatAccuseLine: (room, bot, id, speaker) => voteFacts.formatAccuseLine(room, bot, id, voteFactHelpers, speaker),
   getBotMind,
   getBotFakeClaim: (room, botId) => getBotMind(room, botId).fakeClaim,
-  setBotFakeClaim: (room, botId, role) => {
-    const mind = getBotMind(room, botId);
-    if (mind.fakeClaim != null && mind.fakeClaim !== role) return;
-    mind.fakeClaim = role;
+  setBotFakeClaim: (room, botId, role, opts = {}) => {
+    m42Bluff.setBotFakeClaim(room, botId, role, voteFactHelpers, opts);
   },
   isPoliceReportRequest,
   isPoliceReportProviding: (text, r) => voteFacts.isPoliceReportProviding(text, r),
   buildPolicePublicReport,
+  hasPolicePublishedReportToday,
+  hasPoliceReportInDayChat,
+  getPoliceIntelForReport,
   isRoleClaimRequest,
   isRoleRollCallQuestion,
   isPublicPoliceClaim: (room, playerId) => !!(room.game?.publicPoliceClaimIds?.[playerId]),
   getPublicPoliceClaimTargets: (room, excludeId) => getPublicPoliceClaimTargets(room, excludeId),
   isSelfVoteRequest
+});
+
+Object.assign(voteFactHelpers, {
+  buildPolicePublicReport,
+  hasPolicePublishedReportToday,
+  hasPoliceReportInDayChat
 });
 
 function pickBotKillTarget(room, mafiaBot) {
@@ -2305,11 +2651,8 @@ function pickBotNightActionTarget(room, bot, role) {
     case ROLE.REPORTER:
       return pickBotReporterTarget(room, bot);
     case ROLE.MEDIUM: {
-      const dead = Object.values(room.players).filter(p => !p.alive);
-      if (!dead.length) return null;
-      const scores = buildSuspicionScores(room, bot);
-      dead.sort((a, b) => (scores[b.id] || 0) - (scores[a.id] || 0));
-      return dead[0].id;
+      const pick = mediumPurify.pickSuspiciousDeadTarget(room, bot, voteFactHelpers);
+      return pick ? pick.id : null;
     }
     default:
       return null;
@@ -2320,9 +2663,29 @@ function applyBotDayVote(room, bot) {
   const g = room.game;
   if (!g || g.dayVotes[bot.id]) return false;
   const targetId = pickBotDayVoteTarget(room, bot);
-  if (!targetId) return false;
+  if (!targetId) {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'V1',
+      location: 'server.js:applyBotDayVote',
+      message: 'bot day vote skipped no target',
+      runId: 'vote-fix',
+      data: { bot: bot.nickname, role: bot.role, alive: getAlivePlayers(room).length }
+    });
+    // #endregion
+    return false;
+  }
   g.dayVotes[bot.id] = targetId;
   console.log(`[BOT] ${bot.nickname} day-votes ${playerName(room, targetId)}`);
+  // #region agent log
+  agentLog({
+    hypothesisId: 'V2',
+    location: 'server.js:applyBotDayVote',
+    message: 'bot day vote cast',
+    runId: 'vote-fix',
+    data: { bot: bot.nickname, target: playerName(room, targetId), selfVote: targetId === bot.id }
+  });
+  // #endregion
   return true;
 }
 
@@ -2352,12 +2715,16 @@ function runBotDayVotes(room) {
 function scheduleBotDayVotes(room) {
   if (!hasBots(room)) return;
   runBotDayVotes(room);
-  [2500, 7000, 11000].forEach((ms) => {
+  [2500, 7000, 11000, 13500].forEach((ms) => {
     scheduleRoomTask(room, () => runBotDayVotes(room), ms);
   });
 }
 
 function postBotDayMessage(room, bot, text, opts = {}) {
+  if (!opts._fromBotChatQueue && !isMatgyeongFastBotChat(opts)) {
+    enqueueBotDayMessage(room, bot, text, opts);
+    return;
+  }
   if (!text || !bot?.alive || room.phase !== PHASE.DAY_CHAT) {
     if (opts.policeReportAck) {
       // #region agent log
@@ -2381,7 +2748,10 @@ function postBotDayMessage(room, bot, text, opts = {}) {
     opts.policeReportAck
     || opts.mafiaFakePolice
     || opts.policeMatgyeongBicker
+    || opts.policeCitizenLead
+    || opts.matClaimTikiTaka
     || opts.reporterRevealAck
+    || opts.mediumRevealAck
   );
   if (!priorityChat && !canEmitRoomEvent(room, 'chat')) {
     console.warn(`[BOT] chat rate-limited room=${room.code}`);
@@ -2392,6 +2762,24 @@ function postBotDayMessage(room, bot, text, opts = {}) {
     console.warn(`[BOT] filtered chat from ${bot.nickname}`);
   }
   text = policeFmt.rewriteFormalPoliceReport(text);
+  if (bot.isBot && text && !opts.policeReportAck && !opts.mafiaFakePolice) {
+    const recent = getDayMessages(room).slice(-14);
+    if (recent.some((m) => m && m.text === text)) {
+      // #region agent log
+      agentLog({
+        hypothesisId: 'Dup1',
+        location: 'server.js:postBotDayMessage',
+        message: 'skip duplicate bot day line',
+        data: {
+          bot: bot.nickname,
+          preview: String(text).slice(0, 56),
+          recentTail: recent.slice(-3).map((m) => (m && m.text ? String(m.text).slice(0, 24) : ''))
+        }
+      });
+      // #endregion
+      return;
+    }
+  }
   if (policeFmt.looksLikePoliceReport(text)) {
     const bluffer = m42Bluff.getMafiaPoliceBlufferBot(room, voteFactHelpers);
     if (opts.mafiaFakePolice || (bluffer && bluffer.id === bot.id && bot.role !== ROLE.POLICE)) {
@@ -2532,7 +2920,7 @@ function scheduleBotRoleRollCall(room, triggerText, excludeBotId = null) {
   console.log(`[BOT] role roll-call: ${bots.length} bots (gen=${gen})`);
 
   bots.forEach((bot, i) => {
-    const delay = 380 + i * (95 + Math.floor(Math.random() * 55));
+    const delay = 600 + i * botChatGapMs();
     scheduleRoomTask(room, () => {
       if (room._rollCallGen !== gen || room.phase !== PHASE.DAY_CHAT) return;
       if (!bot.alive) return;
@@ -2626,7 +3014,7 @@ function scheduleBotReplyToPoliceReport(room, reportMsg) {
   };
 
   responders.forEach((bot, i) => {
-    const delayMs = 400 + i * 2000;
+    const delayMs = 800 + i * botChatGapMs();
     const timer = setTimeout(() => {
       if (!rooms.has(room.code) || room.phase !== PHASE.DAY_CHAT) {
         // #region agent log
@@ -2749,6 +3137,27 @@ function buildLastNightReport(room) {
     if (m) reporterReveal = { targetName: m[1], roleLabel: m[2] };
   }
 
+  let mediumPurifyReveal = null;
+  const pendingMed = g.pendingMediumReveal;
+  if (pendingMed) {
+    mediumPurifyReveal = { ...pendingMed };
+  } else if (s.botActs) {
+    const medBot = Object.values(room.players).find((p) => p.role === ROLE.MEDIUM);
+    if (medBot && s.botActs[medBot.id]?.type === 'medium') {
+      const tid = s.botActs[medBot.id].targetId;
+      const t = tid ? getPlayerById(room, tid) : null;
+      if (t) {
+        mediumPurifyReveal = {
+          targetId: t.id,
+          targetName: t.nickname,
+          role: t.role,
+          roleLabel: ROLE_LABELS[t.role],
+          mediumId: medBot.id
+        };
+      }
+    }
+  }
+
   const reporter = Object.values(room.players).find((p) => p.role === ROLE.REPORTER && p.alive);
   const scoopReporterId = reporterReveal && reporterReveal.reporterId
     ? reporterReveal.reporterId
@@ -2763,6 +3172,7 @@ function buildLastNightReport(room) {
     healSave: !!s.healBlockedKill,
     soldierBlock: !!s.soldierBlockedKill,
     reporterReveal,
+    mediumPurify: mediumPurifyReveal,
     reporterBotId: scoopReporterId,
     doctorBotId: doctor ? doctor.id : null,
     soldierBotId: soldier ? soldier.id : null,
@@ -2778,6 +3188,11 @@ function scoreBotDawnReaction(bot, report) {
     if (bot.role === ROLE.REPORTER) s += 8;
     if (bot.role === ROLE.POLICE) s += 4;
     if (isMafiaTeam(bot.role)) s += 3;
+  }
+  if (report.mediumPurify) {
+    if (bot.role === ROLE.MEDIUM) s += 8;
+    if (bot.role === ROLE.POLICE) s += 3;
+    if (isMafiaTeam(bot.role)) s += 2;
   }
   if (report.healSave && bot.role === ROLE.DOCTOR) s += 7;
   if (report.soldierBlock && bot.role === ROLE.SOLDIER) s += 7;
@@ -2799,13 +3214,16 @@ function runBotDawnSkillReaction(room) {
   const bots = getBots(room).filter((p) => p.alive);
   bots.sort((a, b) => scoreBotDawnReaction(b, report) - scoreBotDawnReaction(a, report));
 
-  const maxPosts = report.reporterReveal ? 2 : 1;
+  const maxPosts = (report.reporterReveal || report.mediumPurify) ? 2 : 1;
   let posted = 0;
   for (const bot of bots) {
     if (posted >= maxPosts) break;
     const text = botBrain.generateBotDawnReaction(room, bot, report);
     if (text) {
-      postBotDayMessage(room, bot, text, { reporterRevealAck: !!report.reporterReveal });
+      postBotDayMessage(room, bot, text, {
+        reporterRevealAck: !!report.reporterReveal,
+        mediumRevealAck: !!report.mediumPurify
+      });
       posted += 1;
     }
   }
@@ -2862,6 +3280,61 @@ function scheduleReporterMatgyeongPrompt(room) {
     if (room.phase !== PHASE.DAY_CHAT) return;
     postBotDayMessage(room, bot, line, { reporterRevealAck: true });
   }, 4800);
+}
+
+function scheduleMediumPurifyDayAnnounce(room) {
+  const pending = room.game?.pendingMediumReveal;
+  if (!pending) return;
+  const medium = getPlayerById(room, pending.mediumId);
+  if (!medium || !medium.alive || medium.role !== ROLE.MEDIUM) {
+    room.game.pendingMediumReveal = null;
+    return;
+  }
+  if (!medium.isBot) return;
+  scheduleRoomTask(room, () => {
+    if (room.phase !== PHASE.DAY_CHAT) return;
+    const line = mediumPurify.formatPurifyAnnounce(pending.targetName, pending.roleLabel);
+    postBotDayMessage(room, medium, line, { mediumRevealAck: true });
+    voteIntel.ingestMediumPurifyReveal(
+      room,
+      pending.targetId,
+      pending.role,
+      botLearnRole,
+      medium.id
+    );
+    room.game.pendingMediumReveal = null;
+  }, 1400);
+}
+
+function scheduleMediumDeathPurifyPrompt(room) {
+  const report = room.game?.lastNightReport;
+  if (!report?.deaths?.length || !hasBots(room)) return;
+
+  scheduleMatClaimDeathAnalysis(room);
+
+  const medium = Object.values(room.players).find(
+    (p) => p.alive && p.role === ROLE.MEDIUM
+  );
+  if (!medium) return;
+  const eligible = mediumPurify.listEligibleDead(room);
+  if (!eligible.length) return;
+  const bot = pickRandomCitizenBot(room, medium.id);
+  if (!bot) return;
+
+  const deathIds = report.deaths.map((d) => d.id || d);
+  const deadMat = m42Matclaim.findDeadMatClaimants(room, voteFactHelpers, deathIds);
+  let line;
+  if (deadMat.length) {
+    line = m42Matclaim.pickDeadClaimantAnalysisLine(room, bot, voteFactHelpers, deadMat[0])
+      || `${medium.nickname}님(영매), ${deadMat[0].name}님 맞직 사망입니다. 성불로 직업 확인 부탁드립니다.`;
+  } else {
+    const deadNames = report.deaths.map((d) => d.name).join(', ');
+    line = `${medium.nickname}님(영매), ${deadNames}님 사망 확인했습니다. 사망자 채팅·밤 성불 부탁드립니다.`;
+  }
+  scheduleRoomTask(room, () => {
+    if (room.phase !== PHASE.DAY_CHAT) return;
+    postBotDayMessage(room, bot, line, { mediumRevealAck: true, matClaimTikiTaka: !!deadMat.length });
+  }, 3200);
 }
 
 function scheduleInheritedReporterDayChat(room) {
@@ -2929,13 +3402,25 @@ function runBotNightActions(room) {
       if (!actions.mediumTarget) {
         actions.mediumTarget = pickBotNightActionTarget(room, bot, ROLE.MEDIUM);
       }
-      if (actions.mediumTarget && !actions.mediumResolved) {
-        deliverMediumResult(room, bot, actions.mediumTarget);
+      if (actions.mediumTarget) {
+        const t = getPlayerById(room, actions.mediumTarget);
+        if (t && mediumPurify.isMediumPurifyEligible(room, t)) {
+          deliverMediumResult(room, bot, actions.mediumTarget);
+        } else {
+          actions.mediumTarget = null;
+        }
       }
     }
     if (bot.role === ROLE.CULT_LEADER && m42Cult.canProselytizeTonight(room, bot)) {
-      if (!actions.cultTarget) {
-        actions.cultTarget = pickBotCultTarget(room, bot);
+      const cultTargetId = pickBotCultTarget(room, bot);
+      if (cultTargetId) {
+        const cultResult = applyCultProselytizeAttempt(room, bot, cultTargetId);
+        if (!cultResult.ok && cultResult.failType === 'mafia') {
+          const retryId = pickBotCultTarget(room, bot);
+          if (retryId && retryId !== cultTargetId) {
+            applyCultProselytizeAttempt(room, bot, retryId);
+          }
+        }
       }
     }
   }
@@ -3078,6 +3563,7 @@ function initGameState(room) {
     p.joinedMafiaChat = p.role === ROLE.MAFIA;
     p.spyRevealedToMafia = false;
     p.joinedCult = p.role === ROLE.CULT_LEADER;
+    p.deadSinceNightIndex = null;
   }
 
   room.game = {
@@ -3124,6 +3610,7 @@ function resetNightActions(room) {
     mediumResolved: false,
     cultTarget: null,
     cultResolved: false,
+    cultProselytizedSuccess: false,
     cultFailed: false,
     cultFailedTargetId: null
   };
@@ -3174,7 +3661,8 @@ function toClientState(room, viewerUserId, opts = {}) {
       alive: p.alive,
       connected: p.connected,
       isHost: p.userID === room.hostUserId,
-      isBot: !!p.isBot
+      isBot: !!p.isBot,
+      deadSinceNightIndex: !p.alive && room.game ? (p.deadSinceNightIndex ?? null) : null
     };
     if (room.phase === PHASE.LOBBY) return base;
     if (room.phase === PHASE.GAME_OVER) {
@@ -3257,7 +3745,8 @@ function toClientState(room, viewerUserId, opts = {}) {
     myCultProselytizeTarget: viewer && viewer.role === ROLE.CULT_LEADER && room.game?.nightActions?.cultTarget
       ? room.game.nightActions.cultTarget
       : null,
-    cultResolved: !!(viewer && room.game?.nightActions?.cultResolved),
+    cultResolved: !!(viewer && room.game?.nightActions?.cultProselytizedSuccess),
+    cultProselytizedSuccess: !!(viewer && room.game?.nightActions?.cultProselytizedSuccess),
     canTimeShorten: !!(viewer && viewer.alive && room.phaseTimer && !viewer.timeShortened &&
       room.phase !== PHASE.NIGHT && room.phase !== PHASE.DAWN &&
       room.phase !== PHASE.DAY_VOTE && room.phase !== PHASE.EXECUTION_VOTE && room.phase !== PHASE.LAST_WORDS),
@@ -3535,10 +4024,48 @@ function deliverReporterScoop(room, reporter, targetId) {
   if (reporter.isBot) botLearnRole(room, reporter.id, targetId, target.role);
 }
 
+function canMediumPurifyTarget(room, medium, targetId) {
+  const target = getPlayerById(room, targetId);
+  if (!medium || !target || !medium.alive || medium.role !== ROLE.MEDIUM) return false;
+  if (target.alive) return false;
+  if (room.game?.nightActions?.mediumResolved) return false;
+  return mediumPurify.isMediumPurifyEligible(room, target);
+}
+
 function deliverMediumResult(room, medium, targetId) {
   const target = getPlayerById(room, targetId);
   if (!medium || !target || !medium.alive || target.alive) return;
   if (room.game?.nightActions?.mediumResolved) return;
+  if (!mediumPurify.isMediumPurifyEligible(room, target)) {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'M1',
+      location: 'server.js:deliverMediumResult',
+      message: 'medium purify blocked ineligible',
+      runId: 'medium-fix',
+      data: {
+        target: target.nickname,
+        deadSinceNightIndex: target.deadSinceNightIndex,
+        nightIndex: room.game?.nightIndex
+      }
+    });
+    // #endregion
+    return;
+  }
+  // #region agent log
+  agentLog({
+    hypothesisId: 'M2',
+    location: 'server.js:deliverMediumResult',
+    message: 'medium purify success',
+    runId: 'medium-fix',
+    data: {
+      medium: medium.nickname,
+      target: target.nickname,
+      roleLabel: ROLE_LABELS[target.role],
+      nightIndex: room.game?.nightIndex
+    }
+  });
+  // #endregion
   emitMotionToUser(medium.userID, {
     type: 'spy_investigate',
     title: '영매 성불',
@@ -3562,8 +4089,20 @@ function deliverMediumResult(room, medium, targetId) {
     title: '영매 성불 결과',
     message: `${target.nickname} → ${ROLE_LABELS[target.role]}`
   });
-  if (room.game && room.game.nightActions) room.game.nightActions.mediumResolved = true;
+  if (room.game && room.game.nightActions) {
+    room.game.nightActions.mediumResolved = true;
+    room.game.nightActions.mediumTarget = targetId;
+    room.game.pendingMediumReveal = {
+      mediumId: medium.id,
+      targetId: target.id,
+      targetName: target.nickname,
+      role: target.role,
+      roleLabel: ROLE_LABELS[target.role],
+      nightIndex: room.game.nightIndex
+    };
+  }
   if (medium.isBot) botLearnRole(room, medium.id, targetId, target.role);
+  broadcastState(room);
 }
 
 function emitMotionToUser(userID, motion) {
@@ -3704,12 +4243,16 @@ function setPhase(room, phase, durationMs) {
     room.phaseTimer = setTimeout(() => onPhaseTimeout(room), durationMs);
   }
 
-  broadcastToRoom(room, 'phaseChanged', {
+  const phasePayload = {
     phase,
     remainingMs: durationMs || 0,
     nightIndex: room.game ? room.game.nightIndex : 0,
     dayIndex: room.game ? room.game.dayIndex : 0
-  });
+  };
+  if (room.game && (phase === PHASE.EXECUTION_VOTE || phase === PHASE.LAST_WORDS)) {
+    phasePayload.executionCandidateId = room.game.executionCandidateId || null;
+  }
+  broadcastToRoom(room, 'phaseChanged', phasePayload);
   broadcastState(room);
   scheduleBotActions(room, durationMs || 0);
 }
@@ -3822,14 +4365,20 @@ function startDayChat(room) {
   scheduleReporterRevealDayChat(room);
   scheduleInheritedReporterDayChat(room);
   scheduleReporterMatgyeongPrompt(room);
+  scheduleMediumPurifyDayAnnounce(room);
+  scheduleMediumDeathPurifyPrompt(room);
   scheduleBotDayChat(room);
+  m42Bluff.ensureAllEvilFakeClaims(room, voteFactHelpers);
   m42Bluff.ensureMafiaPoliceBlufferClaim(room, voteFactHelpers);
+  m42Bluff.scheduleMafiaRoleBluffWaves(room, voteFactHelpers, scheduleRoomTask, postBotDayMessage);
   scheduleMafiaEarlyPoliceBluff(room);
   if (!isRealPoliceAlive(room)) {
     scheduleMafiaBluffPoliceMaintains(room);
   } else {
     scheduleMafiaBluffWhileRealPolice(room);
   }
+  schedulePoliceCitizenDayPlaybook(room);
+  scheduleMatClaimDayPlaybook(room);
   const policePairDelay = isRealPoliceAlive(room) ? 1200 : 3500;
   scheduleRoomTask(room, () => {
     const policeBot = Object.values(room.players).find(
@@ -4165,77 +4714,178 @@ function getMafiaKillTarget(room) {
   return top;
 }
 
-function resolveCultProselytize(room) {
+function flushPendingCultBell(room) {
   const g = room.game;
-  const na = g?.nightActions;
-  if (!na || na.cultResolved) return;
-
-  const leader = Object.values(room.players).find(
-    (p) => p.role === ROLE.CULT_LEADER && p.alive
-  );
-  if (!leader || !m42Cult.isOddProselytizeNight(room)) {
-    na.cultResolved = true;
+  if (!g || g._cultBellFired || !g._cultBellPending || !g.nightActions?.cultProselytizedSuccess) {
+    if (g) g._cultBellPending = null;
     return;
   }
+  const leader = getPlayerById(room, g._cultBellPending.leaderId);
+  const target = getPlayerById(room, g._cultBellPending.targetId);
+  if (leader && target) broadcastCultBellMotions(room, leader, target);
+  else g._cultBellPending = null;
+}
 
-  na.cultResolved = true;
-  const targetId = na.cultTarget;
-  if (!targetId) return;
+/** 포교 성공 후 밤 남은 시간 안에서 랜덤 시각에 종소리 */
+function scheduleCultBellMotions(room, leader, target) {
+  const g = room.game;
+  if (!g) return;
+  g._cultBellFired = false;
+  g._cultBellPending = { leaderId: leader.id, targetId: target.id };
 
-  const target = getPlayerById(room, targetId);
-  const valid = m42Cult.isValidProselytizeTarget(room, leader, target, {
-    isMafiaTeam,
-    isMafiaRole
-  });
+  const nightRemaining = room.phaseEndsAt
+    ? Math.max(10000, room.phaseEndsAt - Date.now())
+    : 55000;
+  const minMs = Math.min(18000, Math.max(12000, Math.floor(nightRemaining * 0.22)));
+  const maxMs = Math.max(minMs + 4000, Math.floor(nightRemaining * 0.88));
+  const delayMs = minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
 
-  if (!valid.ok) {
-    if (valid.failType === 'mafia') {
-      na.cultFailed = true;
-      na.cultFailedTargetId = targetId;
-      emitSkillNotice(leader.userID, {
-        scope: 'private',
-        kind: 'cult',
-        title: '포교 실패',
-        message: `${playerName(room, targetId)}님의 포교에 실패하였습니다. (마피아)`
-      });
-      console.log(`[NIGHT][CULT] proselytize FAIL mafia target=${playerName(room, targetId)}`);
+  // #region agent log
+  agentLog({
+    hypothesisId: 'CultBellDelay',
+    location: 'server.js:scheduleCultBellMotions',
+    message: 'cult bell scheduled',
+    data: {
+      leader: leader.nickname,
+      target: target.nickname,
+      delayMs,
+      nightRemaining
     }
-    return;
-  }
-
-  target.joinedCult = true;
-  if (!g.cultProselytizedIds) g.cultProselytizedIds = [];
-  if (!g.cultProselytizedIds.includes(target.id)) g.cultProselytizedIds.push(target.id);
-
-  const roleLabel = ROLE_LABELS[target.role] || target.role;
-  g.pendingAnnouncements.push('교주의 종소리가 울려퍼졌습니다.');
-  emitMotionToUser(target.userID, {
-    type: 'cult_proselytize',
-    title: '포교',
-    message: '교주에게 포교당했습니다. 이제 신도입니다.',
-    situation: '[상황] 교주에게 포교당한 경우',
-    duration: 4200
   });
-  broadcastToRoom(room, 'gameMotion', {
+  // #endregion
+
+  scheduleRoomTask(room, () => {
+    if (g._cultBellFired) return;
+    if (room.phase !== PHASE.NIGHT || !g.nightActions?.cultProselytizedSuccess) {
+      flushPendingCultBell(room);
+      return;
+    }
+    const l = getPlayerById(room, g._cultBellPending?.leaderId);
+    const t = getPlayerById(room, g._cultBellPending?.targetId);
+    if (l && t) broadcastCultBellMotions(room, l, t);
+    else g._cultBellPending = null;
+  }, delayMs);
+}
+
+function broadcastCultBellMotions(room, leader, target) {
+  const g = room.game;
+  if (!g) return;
+  g._cultBellFired = true;
+  g._cultBellPending = null;
+  g.pendingAnnouncements = g.pendingAnnouncements || [];
+  g.pendingAnnouncements.push('교주의 종소리가 울려퍼졌습니다.');
+  const bellMotion = {
     type: 'cult_proselytize',
     title: '종소리',
     message: '교주의 종소리가 울려퍼졌습니다.',
     situation: '[상황] 교주가 포교에 성공한 경우',
-    duration: 3800
-  }, (p) => p.userID !== target.userID);
+    duration: 4200
+  };
+  emitMotionToUser(leader.userID, {
+    ...bellMotion,
+    title: '포교 성공',
+    message: `${target.nickname}님을 포교하였습니다. 종소리가 울립니다.`
+  });
+  if (target.userID) {
+    emitMotionToUser(target.userID, {
+      type: 'cult_proselytize',
+      title: '포교',
+      message: '교주에게 포교당했습니다. 이제 신도입니다.',
+      situation: '[상황] 교주에게 포교당한 경우',
+      duration: 4200
+    });
+  }
+  broadcastToRoom(room, 'gameMotion', bellMotion, (p) => {
+    if (p.userID === leader.userID || p.userID === target.userID) return false;
+    return true;
+  });
   broadcastToRoom(room, 'skillNotice', {
     scope: 'public',
     kind: 'cult',
     title: '종소리',
     message: '교주의 종소리가 울려퍼졌습니다.'
   });
+  broadcastToRoom(room, 'animation', { className: 'anim-cult-proselytize', silent: false });
+}
+
+function applyCultProselytizeAttempt(room, leader, targetId) {
+  const g = room.game;
+  const na = g.nightActions;
+  if (!na) return { ok: false, message: '게임 상태 오류' };
+  if (na.cultProselytizedSuccess) {
+    return { ok: false, message: '이번 밤에는 이미 포교에 성공했습니다.' };
+  }
+  if (!m42Cult.canProselytizeTonight(room, leader)) {
+    return { ok: false, message: '이번 밤에는 포교할 수 없습니다. (홀수 밤만 가능)' };
+  }
+
+  const target = getPlayerById(room, targetId);
+  const valid = m42Cult.isValidProselytizeTarget(room, leader, target, {
+    isMafiaTeam,
+    isMafiaRole
+  });
+  if (!valid.ok) {
+    if (valid.failType === 'mafia') {
+      na.cultTarget = null;
+      na.cultFailed = true;
+      na.cultFailedTargetId = targetId;
+      // #region agent log
+      agentLog({
+        hypothesisId: 'CultFail',
+        location: 'server.js:applyCultProselytizeAttempt',
+        message: 'proselytize mafia fail retry allowed',
+        data: { leader: leader.nickname, target: playerName(room, targetId) }
+      });
+      // #endregion
+    }
+    return { ok: false, message: valid.message, failType: valid.failType };
+  }
+
+  target.joinedCult = true;
+  if (!g.cultProselytizedIds) g.cultProselytizedIds = [];
+  if (!g.cultProselytizedIds.includes(target.id)) g.cultProselytizedIds.push(target.id);
+
+  na.cultTarget = targetId;
+  na.cultProselytizedSuccess = true;
+  na.cultResolved = true;
+  na.cultFailed = false;
+  na.cultFailedTargetId = null;
+
+  const roleLabel = ROLE_LABELS[target.role] || target.role;
+  scheduleCultBellMotions(room, leader, target);
   emitSkillNotice(leader.userID, {
     scope: 'private',
     kind: 'cult',
     title: '포교 성공',
-    message: `${target.nickname}님을 포교하였습니다. (직업: ${roleLabel})`
+    message: `${target.nickname}님을 포교했습니다. 종소리는 밤 중 잠시 후 울립니다. (직업: ${roleLabel})`
   });
+  emitCultTeamInfo(room, target);
+  emitCultTeamInfo(room, leader);
   console.log(`[NIGHT][CULT] proselytize OK ${target.nickname} (${roleLabel})`);
+  // #region agent log
+  agentLog({
+    hypothesisId: 'CultOk',
+    location: 'server.js:applyCultProselytizeAttempt',
+    message: 'proselytize success bell motion',
+    data: { leader: leader.nickname, target: target.nickname, nightIndex: g.nightIndex }
+  });
+  // #endregion
+  return { ok: true, target, roleLabel };
+}
+
+function resolveCultProselytize(room) {
+  const g = room.game;
+  const na = g?.nightActions;
+  if (!na || na.cultProselytizedSuccess) return;
+
+  const leader = Object.values(room.players).find(
+    (p) => p.role === ROLE.CULT_LEADER && p.alive
+  );
+  if (!leader || !m42Cult.isOddProselytizeNight(room)) return;
+
+  const targetId = na.cultTarget;
+  if (!targetId) return;
+  applyCultProselytizeAttempt(room, leader, targetId);
 }
 
 function recordCultProselytize(room, socket, targetId) {
@@ -4245,30 +4895,26 @@ function recordCultProselytize(room, socket, targetId) {
     return reject(socket, '교주만 포교할 수 있습니다.');
   }
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
-  if (!m42Cult.canProselytizeTonight(room, player)) {
-    return reject(socket, '이번 밤에는 포교할 수 없습니다. (홀수 밤만 가능)');
+
+  const result = applyCultProselytizeAttempt(room, player, targetId);
+  if (!result.ok) {
+    if (result.failType === 'mafia') {
+      emitSkillNotice(player.userID, {
+        scope: 'private',
+        kind: 'cult',
+        title: '포교 실패',
+        message: `${playerName(room, targetId)}님은 마피아입니다. 다른 대상을 선택해 다시 시도하세요.`
+      });
+    }
+    return reject(socket, result.message);
   }
 
-  const target = getPlayerById(room, targetId);
-  const valid = m42Cult.isValidProselytizeTarget(room, player, target, {
-    isMafiaTeam,
-    isMafiaRole
-  });
-  if (!valid.ok) return reject(socket, valid.message);
-
-  room.game.nightActions.cultTarget = targetId;
-  emitSkillNotice(player.userID, {
-    scope: 'private',
-    kind: 'cult',
-    title: '포교 지목',
-    message: `${playerName(room, targetId)}님을 포교 대상으로 정했습니다. 밤이 끝나면 처리됩니다.`
-  });
   socket.emit('privateInfo', {
     type: 'actionConfirm',
     action: 'cult',
     targetId,
     targetName: playerName(room, targetId),
-    message: `${playerName(room, targetId)}님에게 포교를 시도했습니다.`
+    message: `${playerName(room, targetId)}님 포교 성공 · 종소리가 울렸습니다.`
   });
   broadcastState(room);
 }
@@ -4390,7 +5036,7 @@ function resolveNight(room) {
   const mediumTarget = g.nightActions.mediumTarget;
   if (mediumTarget) {
     const medium = Object.values(room.players).find(p => p.role === ROLE.MEDIUM && p.alive);
-    if (medium && !g.nightActions.mediumResolved) {
+    if (medium && !g.nightActions.mediumResolved && canMediumPurifyTarget(room, medium, mediumTarget)) {
       deliverMediumResult(room, medium, mediumTarget);
     }
   }
@@ -4490,6 +5136,7 @@ function resolveNight(room) {
     return;
   }
 
+  flushPendingCultBell(room);
   startDawn(room);
 }
 
@@ -4539,6 +5186,22 @@ function proceedDayVoteAfterResults(room, results) {
 
   room.game.dayTopVotedId = topCandidates.length === 1 ? topCandidates[0] : null;
 
+  // #region agent log
+  agentLog({
+    hypothesisId: 'V3',
+    location: 'server.js:proceedDayVoteAfterResults',
+    message: 'day vote outcome',
+    runId: 'vote-fix',
+    data: {
+      tie: results.tie,
+      noVotes: results.noVotes,
+      maxVotes: results.maxVotes,
+      topCount: topCandidates.length,
+      top: topCandidates.map((id) => playerName(room, id))
+    }
+  });
+  // #endregion
+
   if (topCandidates.length !== 1) {
     console.log(`[DAY VOTE] tie or no votes - skipping execution (candidates=${topCandidates.length})`);
     room.game.pendingAnnouncements = [
@@ -4566,6 +5229,7 @@ function proceedDayVoteAfterResults(room, results) {
 
 function resolveDayVote(room) {
   if (!isActiveGame(room)) return;
+  runBotDayVotes(room);
   if (room.resolvingDayVote) {
     if (room._dayVoteResultsTimer) return;
     const stuckMs = room._dayVoteResolveAt ? Date.now() - room._dayVoteResolveAt : 0;
@@ -4622,6 +5286,22 @@ function resolveExecutionVote(room) {
   const executed = yes > no && yes > 0;
 
   console.log(`[EXECUTION] candidate=${candidate.nickname} yes=${yes} no=${no} (미투표=반대) -> ${executed ? 'EXECUTED' : 'SPARED'}`);
+  // #region agent log
+  agentLog({
+    hypothesisId: 'V4',
+    location: 'server.js:resolveExecutionVote',
+    message: 'execution vote result',
+    runId: 'vote-fix',
+    data: {
+      candidate: candidate.nickname,
+      role: candidate.role,
+      yes,
+      no,
+      voters: voters.length,
+      executed
+    }
+  });
+  // #endregion
 
   if (executed) {
     markPlayerDead(room, candidate);
@@ -4871,7 +5551,8 @@ function reconnectPlayer(socket, room, player) {
   socket.join(room.code);
   if (player.role) {
     socket.emit('privateInfo', { type: 'role', role: player.role, roleLabel: ROLE_LABELS[player.role] });
-    emitMafiaTeamInfo(room, player);
+    if (viewerOnMafiaSide(player)) emitMafiaTeamInfo(room, player);
+    else if (isCultMember(player)) emitCultTeamInfo(room, player);
   }
   socket.emit('stateSync', toClientState(room, socket.userID, { includeChat: true }));
   socket.emit('joinResult', { ok: true, resumed: true });
@@ -5003,10 +5684,15 @@ function recordMediumPurify(room, socket, targetId) {
   if (!player || !player.alive || player.role !== ROLE.MEDIUM) return reject(socket, '영매만 성불할 수 있습니다.');
   if (room.phase !== PHASE.NIGHT) return reject(socket, '밤에만 가능합니다.');
   if (room.game.nightActions.mediumResolved) return reject(socket, '이번 밤에는 이미 성불했습니다.');
-  const deadCount = Object.values(room.players).filter((p) => !p.alive).length;
-  if (!deadCount) return reject(socket, '성불할 사망자가 없습니다. (이번 밤에 죽은 사람은 다음 낮부터 성불할 수 있습니다.)');
+  const eligible = mediumPurify.listEligibleDead(room);
+  if (!eligible.length) {
+    return reject(socket, '성불할 사망자가 없습니다. (이번 밤에 죽은 사람은 다음 밤부터 성불할 수 있습니다.)');
+  }
   const valid = validateNightTarget(room, player, targetId, { aliveOnly: false, deadOnly: true });
   if (!valid.ok) return reject(socket, valid.message);
+  if (!canMediumPurifyTarget(room, player, targetId)) {
+    return reject(socket, '이번 밤에 사망한 사람은 다음 밤부터 성불할 수 있습니다.');
+  }
   room.game.nightActions.mediumTarget = targetId;
   deliverMediumResult(room, player, targetId);
   if (!room.game.nightActions.mediumResolved) {
@@ -5144,7 +5830,7 @@ function handleChat(room, socket, channel, text) {
         scheduleBotTimeAdjustReaction(room, timeAdj);
       }
       if (isMediumPurifyRequest(msg.text)) {
-        handleMediumPurifyChatRequest(room);
+        handleMediumPurifyChatRequest(room, player);
       } else if (isPoliceReportRequest(msg.text, room)) {
         // #region agent log
         agentLog({
@@ -5303,6 +5989,7 @@ io.on('connection', (socket) => {
     }
     for (const p of Object.values(room.players)) {
       if (isMafiaRole(p.role)) emitMafiaTeamInfo(room, p);
+      if (isCultMember(p)) emitCultTeamInfo(room, p);
     }
     startNight(room);
   });

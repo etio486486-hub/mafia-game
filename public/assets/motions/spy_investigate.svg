@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400" width="640" height="400">
+  <rect width="640" height="400" fill="#120a18"/>
+  <circle cx="320" cy="160" r="80" fill="rgba(201,162,74,0.2)"/>
+  <text x="320" y="280" text-anchor="middle" fill="#e8d48a" font-size="36" font-family="serif">스파이 조사</text>
+</svg>

@@ -107,7 +107,7 @@ const ROLE_GUIDE = {
   [ROLE.CULT_LEADER]: {
     name: '교주', team: '교주 팀',
     desc: '홀수 밤마다 마피아가 아닌 생존자 1명을 포교해 교주팀으로 만듭니다. 마피아·이미 포교된 대상은 불가. 포교 성공 시 종소리가 울립니다.',
-    tip: '홀수 밤 → 대상 선택 → 포교 · 밤챗(교주팀 탭)으로 신도에게 지시'
+    tip: '홀수 밤 1회 포교(성공 시 종소리 즉시) · 마피아 실패 시 다른 대상 재시도 · 교주·신도 낮 2표'
   }
 };
 
@@ -275,7 +275,12 @@ function canSelectPlayerSlot(p) {
   if (state.phase === 'night' && me.alive) {
     if (state.myRole === ROLE.MEDIUM) {
       if (state.mediumResolved) return false;
-      return !p.alive;
+      if (!p.alive) {
+        const dn = p.deadSinceNightIndex;
+        if (dn != null && state.nightIndex != null && dn >= state.nightIndex) return false;
+        return true;
+      }
+      return false;
     }
     return p.alive && [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER].includes(state.myRole);
   }
@@ -479,11 +484,13 @@ function setPhaseTheme(phase) {
   document.body.classList.remove('phase-night', 'phase-day', 'has-night-skill');
   if (phase === 'night') {
     document.body.classList.add('phase-night');
+    updateGameBgLayer(true);
     if (state && hasNightSkill(state.myRole)) {
       document.body.classList.add('has-night-skill');
     }
   } else {
     document.body.classList.add('phase-day');
+    updateGameBgLayer(false);
   }
 }
 
@@ -755,8 +762,8 @@ function renderLobbyChat() {
   list.scrollTop = list.scrollHeight;
 }
 
-const ROLE_PORTRAIT_VERSION = '3';
-const UI_ASSET_VERSION = '3';
+const ROLE_PORTRAIT_VERSION = '5';
+const UI_ASSET_VERSION = '6';
 const PHASE_ILLUSTRATION_COUNT = 5;
 
 let voteTimeOverlayTimer = null;
@@ -766,10 +773,24 @@ function uiAssetUrl(name) {
   return `/assets/ui/${name}?v=${UI_ASSET_VERSION}`;
 }
 
-function phaseIllustrationUrl(kind, index) {
+function phaseIllustrationUrl(kind, index, ext = 'png') {
   const base = kind === 'night' ? 'night_fall' : 'day_dawn';
   const slot = ((Math.max(1, index) - 1) % PHASE_ILLUSTRATION_COUNT) + 1;
-  return uiAssetUrl(`${base}_${slot}.png`);
+  const suffix = ext === 'svg' ? 'svg' : 'png';
+  return uiAssetUrl(`${base}_${slot}.${suffix}`);
+}
+
+function getPhaseTransitionOverlay() {
+  const direct = document.body.querySelector(':scope > #phase-transition-overlay');
+  return direct || document.getElementById('phase-transition-overlay');
+}
+
+function updateGameBgLayer(isNight) {
+  const layer = document.getElementById('game-bg-layer');
+  if (!layer) return;
+  const name = isNight ? 'bg_night' : 'bg_day';
+  layer.style.backgroundImage =
+    `url('${uiAssetUrl(`${name}.png`)}'), url('${uiAssetUrl(`${name}.svg`)}')`;
 }
 
 function getPlayerSlotIndex(playerId) {
@@ -788,7 +809,11 @@ function buildPlayerAvatarInner(playerId) {
     const initial = (ROLE_GUIDE[guessed] && ROLE_GUIDE[guessed].name.slice(0, 1)) || '?';
     return `<img src="${rolePortraitUrl(guessed)}" alt="${escapeHtml(label)}" loading="lazy" onerror="${rolePortraitImgOnerror(initial, guessed)}">`;
   }
-  return '?';
+  const pid = Number(playerId);
+  const safeId = Number.isFinite(pid) ? String(pid) : '';
+  if (!safeId) return '<span class="role-portrait-fallback">?</span>';
+  return '<button type="button" class="chat-avatar-guess-btn" data-guess-id="' + safeId + '" aria-label="직업 유추">' +
+    '<span class="role-portrait-fallback">?</span></button>';
 }
 
 function buildChatProfileHtml(playerId) {
@@ -802,7 +827,44 @@ function showVoteTimeOverlay() {
   const overlay = $('#vote-time-overlay');
   const img = $('#vote-time-img');
   if (!overlay || !img) return;
-  img.src = uiAssetUrl('vote_time.png');
+  delete img.dataset.fallback;
+  const voteUrl = uiAssetUrl('vote_time.svg');
+  // #region agent log
+  fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+    body: JSON.stringify({
+      sessionId: 'a38a8e',
+      hypothesisId: 'ImgVote',
+      location: 'public/app.js:showVoteTimeOverlay',
+      message: 'vote overlay',
+      data: { voteUrl },
+      timestamp: Date.now()
+    })
+  }).catch(() => {});
+  // #endregion
+  img.decoding = 'async';
+  img.onerror = () => {
+    // #region agent log
+    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+      body: JSON.stringify({
+        sessionId: 'a38a8e',
+        hypothesisId: 'ImgVoteErr',
+        location: 'public/app.js:showVoteTimeOverlay:onerror',
+        message: 'vote img error',
+        data: { src: String(img.src || '').slice(-120), hadFb: !!img.dataset.fallback },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+    // #endregion
+    if (!img.dataset.fallback) {
+      img.dataset.fallback = '1';
+      img.src = voteUrl;
+    }
+  };
+  img.src = voteUrl;
   overlay.hidden = false;
   clearTimeout(voteTimeOverlayTimer);
   voteTimeOverlayTimer = setTimeout(() => {
@@ -841,15 +903,11 @@ function showVoteResultsOverlay(data) {
   list.innerHTML = (data.rows || []).map((row) => {
     const marks = Array.from({ length: row.votes }, () => '<span class="vote-tally-mark"></span>').join('');
     const topCls = row.playerId === data.topCandidateId && row.votes > 0 ? ' is-top' : '';
-    const voters = (row.voterNames && row.voterNames.length)
-      ? `<div class="vote-results-voters">투표: ${row.voterNames.map((n) => escapeHtml(n)).join(', ')}</div>`
-      : '';
     return `<li class="vote-results-row${topCls}">` +
       `<div class="vote-results-avatar">${buildPlayerAvatarInner(row.playerId)}</div>` +
       `<span class="vote-results-name">${escapeHtml(row.nickname)}</span>` +
       `<div class="vote-results-marks">${marks}</div>` +
       `<span class="vote-results-count">${row.votes}</span>` +
-      voters +
       `</li>`;
   }).join('');
 
@@ -868,7 +926,7 @@ function hideVoteResultsOverlay() {
 
 function rolePortraitUrl(role, ext) {
   if (!role) return '';
-  const suffix = ext === 'svg' ? 'svg' : 'png';
+  const suffix = ext === 'png' ? 'png' : 'svg';
   return `/assets/roles/${role}.${suffix}?v=${ROLE_PORTRAIT_VERSION}`;
 }
 
@@ -878,14 +936,15 @@ function rolePortraitImgOnerror(initial, role) {
     initial + "</div>'}else{this.dataset.fallback='1';this.src='" + fb + "'}";
 }
 
-function buildRolePortraitHtml(role) {
+function buildRolePortraitHtml(role, opts = {}) {
   if (!role || !ROLE_GUIDE[role]) {
     return '<div class="role-portrait-fallback">?</div>';
   }
   const g = ROLE_GUIDE[role];
-  const url = rolePortraitUrl(role);
+  const url = rolePortraitUrl(role, 'png');
   const initial = g.name.slice(0, 1);
-  return `<img src="${url}" alt="${g.name}" loading="lazy" ` +
+  const largeCls = opts && opts.large ? ' role-portrait-large' : '';
+  return `<img class="role-portrait-img${largeCls}" src="${url}" alt="${g.name}" loading="lazy" ` +
     `onerror="${rolePortraitImgOnerror(initial, role)}">`;
 }
 
@@ -1007,26 +1066,80 @@ function showSkillNotice(data) {
 }
 
 function showPhaseTransition(kind, title, caption, index = 1) {
-  const overlay = $('#phase-transition-overlay');
-  const img = $('#phase-transition-img');
-  const titleEl = $('#phase-transition-title');
-  const captionEl = $('#phase-transition-caption');
+  const overlay = getPhaseTransitionOverlay();
+  const img = document.getElementById('phase-transition-img');
+  const titleEl = document.getElementById('phase-transition-title');
+  const captionEl = document.getElementById('phase-transition-caption');
   if (!overlay || !img || !titleEl || !captionEl) return;
 
-  const legacyName = kind === 'night' ? 'night_fall.png' : 'day_dawn.png';
-  img.onerror = () => {
-    const fallback = uiAssetUrl(legacyName);
-    if (!img.src.endsWith(legacyName)) img.src = fallback;
+  const srcChain = [
+    phaseIllustrationUrl(kind, index, 'png'),
+    phaseIllustrationUrl(kind, index, 'svg'),
+    uiAssetUrl(kind === 'night' ? 'night_fall.png' : 'day_dawn.png'),
+    uiAssetUrl(kind === 'night' ? 'night_fall.svg' : 'day_dawn.svg')
+  ];
+  let chainStep = 0;
+  delete img.dataset.fallback;
+  img.decoding = 'async';
+  img.onload = () => {
+    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+      body: JSON.stringify({
+        sessionId: 'a38a8e',
+        hypothesisId: 'ImgPhaseOk',
+        location: 'public/app.js:showPhaseTransition:onload',
+        message: 'phase img loaded',
+        data: { kind, index, src: String(img.src || '').slice(-80) },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
   };
-  img.src = phaseIllustrationUrl(kind, index);
+  img.onerror = () => {
+    chainStep += 1;
+    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+      body: JSON.stringify({
+        sessionId: 'a38a8e',
+        hypothesisId: 'ImgPhaseErr',
+        location: 'public/app.js:showPhaseTransition:onerror',
+        message: 'phase img error step',
+        data: { kind, chainStep, next: srcChain[chainStep] || null },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+    if (chainStep < srcChain.length) {
+      img.src = srcChain[chainStep];
+      return;
+    }
+    img.alt = title;
+  };
+  // #region agent log
+  fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+    body: JSON.stringify({
+      sessionId: 'a38a8e',
+      hypothesisId: 'ImgPhase',
+      location: 'public/app.js:showPhaseTransition',
+      message: 'phase transition show',
+      data: { kind, index, srcChain0: srcChain[0] },
+      timestamp: Date.now()
+    })
+  }).catch(() => {});
+  // #endregion
+  img.src = srcChain[0];
   titleEl.textContent = title;
   captionEl.textContent = caption;
   overlay.hidden = false;
+  overlay.setAttribute('aria-hidden', 'false');
 
   clearTimeout(phaseTransitionTimer);
   phaseTransitionTimer = setTimeout(() => {
     overlay.hidden = true;
-  }, 2800);
+    overlay.setAttribute('aria-hidden', 'true');
+  }, 3200);
 }
 
 function showRoleReveal(role) {
@@ -1232,18 +1345,15 @@ function renderPlayerGrid() {
       ? `<button type="button" class="slot-target-btn${selectedTargetId === p.id || state.myDayVoteTarget === p.id ? ' active' : ''}" data-target-id="${p.id}" title="능력/투표 대상">◎</button>`
       : '';
 
-    const liveVotes = state.dayVoteLiveTally && state.dayVoteLiveTally[p.id];
-    const voteBadge = (state.phase === 'day_vote' && liveVotes)
-      ? `<span class="vote-live-badge" title="실시간 득표(가중)">${liveVotes}</span>`
-      : '';
+    const unknownRole = !showRoleImg && !note.guessedRole;
+    const avatarCls = `slot-avatar${showRoleImg || note.guessedRole ? ' has-img' : ''}${unknownRole ? ' is-unknown-role' : ''}`;
 
     return `<div class="${cls}" data-id="${p.id}">` +
       `<span class="slot-num">${i + 1}</span>` +
-      voteBadge +
       targetBtn +
       `<span class="slot-key">F${i + 1}</span>` +
       `<button type="button" class="slot-select${canSelect ? '' : ' is-disabled'}" data-target-id="${p.id}" title="${canSelect ? '능력/투표 대상 선택' : ''}"${canSelect ? '' : ' disabled'}>` +
-      `<div class="slot-avatar${showRoleImg || note.guessedRole ? ' has-img' : ''}">${avatarInner}</div>` +
+      `<div class="${avatarCls}"${unknownRole ? ` data-guess-id="${p.id}" title="직업 유추"` : ''}>${avatarInner}</div>` +
       `<div class="name">${escapeHtml(p.nickname)}${isSelf ? ' (나)' : ''}</div>` +
       `</button>` +
       guessHtml +
@@ -1262,6 +1372,13 @@ function renderPlayerGrid() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       openPlayerRolePicker(btn.dataset.guessId);
+    });
+  });
+
+  grid.querySelectorAll('.slot-avatar.is-unknown-role').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPlayerRolePicker(el.dataset.guessId);
     });
   });
 
@@ -1366,20 +1483,13 @@ function renderActionPanel() {
       hint.textContent = '기자 취재는 2번째 밤부터 사용할 수 있습니다.';
     }
     if (state.myRole === ROLE.CULT_LEADER) {
-      if (state.cultProselytizeTonight && !state.cultResolved) {
+      if (state.cultProselytizeTonight && !state.cultProselytizedSuccess) {
         addConfirmBtn(btns, '포교', () => emitNightAction('cultProselytize'));
-        const voted = state.myCultProselytizeTarget
-          ? state.players.find((p) => p.id === state.myCultProselytizeTarget)
-          : null;
-        if (voted) {
-          hint.textContent = `${voted.nickname}님에게 포교 예정 · 밤이 끝나면 처리됩니다.`;
-        } else {
-          hint.textContent = '홀수 밤: 생존자 선택 → 「포교」. 마피아에게는 실패합니다.';
-        }
+        hint.textContent = '홀수 밤: 대상 선택 후 「포교」. 성공하면 종소리는 밤 중 랜덤 시각에 울립니다. 마피아 실패 시 다른 대상을 고를 수 있습니다.';
       } else if ((state.nightIndex || 0) % 2 === 0) {
         hint.textContent = '짝수 밤에는 포교할 수 없습니다. 교주팀 탭으로 신도에게 지시하세요.';
-      } else if (state.cultResolved) {
-        hint.textContent = '이번 밤 포교를 마쳤습니다. 교주팀 탭으로 밤챗을 보내세요.';
+      } else if (state.cultProselytizedSuccess) {
+        hint.textContent = '이번 밤 포교에 성공했습니다. 교주팀 탭으로 밤챗을 보내세요.';
       }
     }
     if (state.joinedCult && state.myRole !== ROLE.CULT_LEADER) {
@@ -1455,10 +1565,13 @@ function emitNightAction(event) {
     policeInvestigate: { anim: 'anim-investigate', cardFx: null },
     reporterScoop: { anim: 'anim-reporter-flash', cardFx: null },
     mediumPurify: { anim: 'anim-investigate', cardFx: null },
-    cultProselytize: { anim: 'anim-cult-proselytize', cardFx: 'fx-target-cult' }
+    cultProselytize: { anim: null, cardFx: 'fx-target-cult' }
   };
   const fx = animMap[event];
-  if (fx) runAnimation(fx.anim, { targetId: selectedTargetId, cardFx: fx.cardFx });
+  if (fx && fx.anim) runAnimation(fx.anim, { targetId: selectedTargetId, cardFx: fx.cardFx });
+  if (event === 'cultProselytize') {
+    showToast('포교 시도 중… 성공 시 종소리는 밤 중 랜덤 시각에 울립니다.');
+  }
   if (event === 'mafiaVote') {
     showToast('암살 투표 완료. 밤이 끝나야 실제로 살해 처리됩니다.');
   }
@@ -1480,7 +1593,11 @@ function onPlayerCardClick(id) {
           return showToast('이번 밤에는 이미 성불했습니다.');
         }
         if (player.alive) {
-          return showToast('사망자만 성불할 수 있습니다. (이번 밤에 죽은 사람은 아침 이후에 성불 가능)');
+          return showToast('사망자만 성불할 수 있습니다.');
+        }
+        const dn = player.deadSinceNightIndex;
+        if (dn != null && state.nightIndex != null && dn >= state.nightIndex) {
+          return showToast('이번 밤에 사망한 사람은 다음 밤부터 성불할 수 있습니다.');
         }
         return showToast('이 대상은 선택할 수 없습니다.');
       }
@@ -1490,9 +1607,7 @@ function onPlayerCardClick(id) {
 
   if (state.phase === 'day_vote' && me && me.alive && player && player.alive) {
     const isCancel = state.myDayVoteTarget === id;
-    state.myDayVoteTarget = isCancel ? null : id;
     socket.emit('dayVote', { targetId: isCancel ? null : id });
-    renderPlayerGrid();
     runAnimation('anim-vote', { targetId: id, cardFx: 'fx-target-vote', silent: isCancel });
     showToast(isCancel ? '투표를 취소했습니다.' : `${player.nickname}에게 투표했습니다.`);
     return;
@@ -1529,10 +1644,31 @@ function hideExecutionVoteOverlay() {
 
 function dismissGameOverlays() {
   hideExecutionVoteOverlay();
-  const voteOverlay = $('#vote-time-overlay');
-  if (voteOverlay) voteOverlay.hidden = true;
-  const voteResults = $('#vote-results-overlay');
-  if (voteResults) voteResults.hidden = true;
+  const overlayIds = [
+    'vote-time-overlay',
+    'vote-results-overlay',
+    'phase-transition-overlay',
+    'role-reveal-overlay',
+    'reporter-reveal-overlay',
+    'player-memo-overlay',
+    'motion-overlay',
+    'execution-vote-overlay'
+  ];
+  overlayIds.forEach((id) => {
+    const el = id === 'phase-transition-overlay'
+      ? getPhaseTransitionOverlay()
+      : document.getElementById(id);
+    if (el) {
+      el.hidden = true;
+      el.setAttribute('aria-hidden', 'true');
+    }
+  });
+  const skill = $('#skill-notice');
+  if (skill) skill.hidden = true;
+  clearTimeout(phaseTransitionTimer);
+  clearTimeout(skillNoticeTimer);
+  clearTimeout(voteResultsOverlayTimer);
+  clearTimeout(voteTimeOverlayTimer);
   if (typeof clearMotionQueue === 'function') clearMotionQueue();
 }
 
@@ -1679,7 +1815,8 @@ function appendPrivateInfo(data) {
     police: '경찰 조사',
     doctor: '치료',
     reporter: '기자 취재',
-    medium: '성불'
+    medium: '성불',
+    cult: '포교'
   };
   switch (data.type) {
     case 'role': line = `배정된 직업: ${data.roleLabel}`; break;
@@ -1699,6 +1836,17 @@ function appendPrivateInfo(data) {
           ? `${actionLabels[data.action] || '능력'} 대상: ${data.targetName}`
           : '능력 대상 선택됨');
       break;
+    case 'mafiaTeam': {
+      const mates = (data.teammates || []).map((t) => `${t.nickname}(${t.roleLabel || '?'})`).join(', ');
+      line = mates ? `마피아 팀: ${mates}` : '마피아 팀: (표시할 동료 없음)';
+      break;
+    }
+    case 'cultTeam': {
+      const leader = data.leaderNickname ? `교주 ${data.leaderNickname}` : '교주';
+      const followers = (data.followers || []).map((f) => f.nickname).join(', ');
+      line = followers ? `교주팀 — ${leader} · 신도: ${followers}` : `교주팀 — ${leader}`;
+      break;
+    }
     default: line = JSON.stringify(data);
   }
   el.innerHTML += `<div class="private-info-line">${escapeHtml(line)}</div>`;
@@ -1828,12 +1976,27 @@ socket.on('stateSync', (data) => {
 });
 
 socket.on('phaseChanged', (data) => {
+  // #region agent log
+  fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+    body: JSON.stringify({
+      sessionId: 'a38a8e',
+      hypothesisId: 'ImgPhaseEvt',
+      location: 'public/app.js:phaseChanged',
+      message: 'phaseChanged event',
+      data: { phase: data.phase, nightIndex: data.nightIndex, dayIndex: data.dayIndex },
+      timestamp: Date.now()
+    })
+  }).catch(() => {});
+  // #endregion
   if (data.remainingMs != null) startLocalTimer(data.remainingMs);
   if (state) {
     state.phase = data.phase;
     if (data.nightIndex != null) state.nightIndex = data.nightIndex;
     if (data.dayIndex != null) state.dayIndex = data.dayIndex;
     if (data.remainingMs != null) state.phaseRemainingMs = data.remainingMs;
+    if (data.executionCandidateId != null) state.executionCandidateId = data.executionCandidateId;
   }
   if (data.timerAdjust) {
     if (state) renderTimeButtons();
@@ -1869,10 +2032,7 @@ socket.on('phaseChanged', (data) => {
   }
   if (data.phase !== 'execution_vote') hideExecutionVoteOverlay();
   selectedTargetId = null;
-  if (state) {
-    renderTimeButtons();
-    updateChatTabs();
-  }
+  renderFromState();
 });
 
 socket.on('animation', (data) => {
@@ -1880,6 +2040,10 @@ socket.on('animation', (data) => {
 });
 
 socket.on('gameMotion', (data) => {
+  if (data && data.type === 'cult_proselytize') {
+    runAnimation('anim-cult-proselytize', { silent: false });
+    AudioManager.playSFX('night');
+  }
   if (typeof enqueueMotion === 'function') enqueueMotion(data);
 });
 
@@ -1959,6 +2123,13 @@ socket.on('privateInfo', (data) => {
     renderPlayerGrid();
     renderActionPanel();
   }
+  if (data.type === 'cultTeam') {
+    const leader = data.leaderNickname ? `교주 ${data.leaderNickname}` : '교주';
+    const followers = (data.followers || []).map((f) => f.nickname).join(', ');
+    showToast(followers ? `교주팀: ${leader} · 신도 ${followers}` : `교주팀: ${leader}`);
+    renderPlayerGrid();
+    renderActionPanel();
+  }
   if (data.type === 'role' || data.type === 'inherit') {
     if (state) {
       state.myRole = data.role;
@@ -2032,6 +2203,11 @@ socket.on('reporterReveal', (data) => {
 socket.on('gameOver', (data) => {
   AudioManager.playSFX('gameover');
   showToast(data.message);
+  if (state) {
+    state.phase = 'game_over';
+    if (data.winner) state.winner = data.winner;
+    renderFromState();
+  }
 });
 
 socket.on('error', (data) => {
@@ -2211,3 +2387,33 @@ function setupMobileOptimizations() {
 
 setupMobileOptimizations();
 updateLobbyConnectionUi();
+
+function setupChatGuessDelegation() {
+  const list = $('#chat-messages');
+  if (!list || list.dataset.guessDelegated === '1') return;
+  list.dataset.guessDelegated = '1';
+  list.addEventListener('click', (ev) => {
+    const btn = ev.target && ev.target.closest && ev.target.closest('[data-guess-id]');
+    if (!btn) return;
+    ev.preventDefault();
+    const raw = btn.getAttribute('data-guess-id');
+    const pid = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(pid)) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+      body: JSON.stringify({
+        sessionId: 'a38a8e',
+        hypothesisId: 'GuessUi',
+        location: 'public/app.js:setupChatGuessDelegation',
+        message: 'guess avatar click',
+        data: { playerId: pid },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+    // #endregion
+    openPlayerRolePicker(pid);
+  });
+}
+setupChatGuessDelegation();

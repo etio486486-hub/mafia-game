@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 520" width="400" height="520">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a5568" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#0a0c10"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="520" fill="url(#g)"/>
+  <ellipse cx="200" cy="200" rx="70" ry="85" fill="rgba(255,255,255,0.12)"/>
+  <text x="200" y="400" text-anchor="middle" fill="#f0e6d0" font-size="42" font-family="serif" font-weight="bold">군인</text>
+</svg>

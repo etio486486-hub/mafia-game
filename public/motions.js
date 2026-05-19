@@ -1,37 +1,27 @@
 /* Game motion / cutscene system (Mafia42-style) */
-const MOTION_ASSET_VERSION = '4';
+const MOTION_ASSET_VERSION = '6';
 
-const MOTION_SCENES = {
-  vote_execution: '/assets/motions/vote_execution.png',
-  vote_rejected: '/assets/motions/vote_rejected.png',
-  vote_tie: '/assets/motions/vote_rejected.png',
-  quiet_night: '/assets/motions/quiet_night.png',
-  mafia_kill: '/assets/motions/mafia_kill.png',
-  doctor_heal: '/assets/motions/doctor_heal.png',
-  soldier_block: '/assets/motions/soldier_block.png',
-  police_mafia: '/assets/motions/police_mafia.png',
-  police_innocent: '/assets/motions/police_innocent.png',
-  spy_contact: '/assets/motions/spy_contact.png',
-  spy_investigate: '/assets/motions/spy_investigate.png',
-  madam_silence: '/assets/motions/madam_silence.png',
-  politician_immunity: '/assets/motions/politician_immunity.png',
-  reporter_scoop: '/assets/motions/reporter_scoop.png',
-  graverobber_inherit: '/assets/motions/graverobber_inherit.png',
-  cult_proselytize: '/assets/motions/cult_proselytize.svg'
-};
+const MOTION_TYPES = [
+  'vote_execution', 'vote_rejected', 'vote_tie', 'quiet_night', 'mafia_kill',
+  'doctor_heal', 'soldier_block', 'police_mafia', 'police_innocent',
+  'spy_contact', 'spy_investigate', 'madam_silence', 'politician_immunity',
+  'reporter_scoop', 'graverobber_inherit', 'cult_proselytize'
+];
 
-const MOTION_SCENE_FALLBACK_SVG = {
-  cult_proselytize: '/assets/motions/cult_proselytize.svg'
-};
-
-function motionSceneUrl(type) {
-  const base = MOTION_SCENES[type] || MOTION_SCENES.quiet_night;
-  return base + '?v=' + MOTION_ASSET_VERSION;
+function motionTypeKey(type) {
+  if (type === 'vote_tie') return 'vote_rejected';
+  return MOTION_TYPES.includes(type) ? type : 'quiet_night';
 }
 
-function motionSceneFallback(type) {
-  const svg = MOTION_SCENE_FALLBACK_SVG[type];
-  return svg ? svg + '?v=' + MOTION_ASSET_VERSION : motionSceneUrl('quiet_night');
+/** 기존 PNG 일러스트 우선, 없으면 SVG */
+function motionScenePngUrl(type) {
+  const key = motionTypeKey(type);
+  return `/assets/motions/${key}.png?v=${MOTION_ASSET_VERSION}`;
+}
+
+function motionSceneSvgUrl(type) {
+  const key = motionTypeKey(type);
+  return `/assets/motions/${key}.svg?v=${MOTION_ASSET_VERSION}`;
 }
 
 let motionQueue = [];
@@ -73,18 +63,73 @@ function showGameMotion(data) {
     const overlay = document.getElementById('motion-overlay');
     if (!overlay) return resolve();
 
-    const scene = motionSceneUrl(data.type);
-    const fallback = motionSceneFallback(data.type);
+    const scenePng = motionScenePngUrl(data.type);
+    const sceneSvg = motionSceneSvgUrl(data.type);
+    // #region agent log
+    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+      body: JSON.stringify({
+        sessionId: 'a38a8e',
+        hypothesisId: 'MotionPng',
+        location: 'public/motions.js:showGameMotion',
+        message: 'motion load png first',
+        data: { type: data.type, scenePng },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+    // #endregion
     overlay.innerHTML =
       '<div class="motion-panel">' +
       '<div class="motion-header">' + motionEscapeHtml(data.title || '') + '</div>' +
-      '<div class="motion-scene"><img src="' + scene + '" alt="" onerror="this.onerror=null;this.src=\'' + fallback + '\'"></div>' +
+      '<div class="motion-scene"><img id="motion-scene-img" src="" alt=""></div>' +
       '<div class="motion-message">' + motionEscapeHtml(data.message || '') + '</div>' +
       '<div class="motion-situation">' + motionEscapeHtml(data.situation || '') + '</div>' +
       '<button type="button" class="btn btn-secondary motion-close">확인</button>' +
       '</div>';
 
     overlay.hidden = false;
+    const img = overlay.querySelector('#motion-scene-img');
+    if (img) {
+      img.decoding = 'async';
+      img.onerror = () => {
+        if (!img.dataset.fallback) {
+          img.dataset.fallback = 'svg';
+          img.src = sceneSvg;
+          return;
+        }
+        fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+          body: JSON.stringify({
+            sessionId: 'a38a8e',
+            hypothesisId: 'MotionFail',
+            location: 'public/motions.js:showGameMotion:onerror',
+            message: 'motion png+svg failed',
+            data: { type: data.type },
+            timestamp: Date.now()
+          })
+        }).catch(() => {});
+        img.alt = data.title || data.type || 'scene';
+      };
+      img.onload = () => {
+        if (img.dataset.logged) return;
+        img.dataset.logged = '1';
+        fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+          body: JSON.stringify({
+            sessionId: 'a38a8e',
+            hypothesisId: 'MotionOk',
+            location: 'public/motions.js:showGameMotion:onload',
+            message: 'motion img loaded',
+            data: { type: data.type, src: String(img.src || '').slice(-48) },
+            timestamp: Date.now()
+          })
+        }).catch(() => {});
+      };
+      img.src = scenePng;
+    }
     requestAnimationFrame(() => overlay.classList.add('active'));
 
     const done = () => {

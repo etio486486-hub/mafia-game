@@ -15,8 +15,8 @@ fs.mkdirSync(motionDst, { recursive: true });
 fs.mkdirSync(roleDst, { recursive: true });
 
 if (!fs.existsSync(srcDir)) {
-  console.error('Missing assets folder:', srcDir);
-  process.exit(1);
+  console.warn('copy-motion-pngs: no assets/ folder — skip PNG copy (use ensure-placeholder-assets for SVG)');
+  process.exit(0);
 }
 
 const motionNames = fs.readdirSync(srcDir).filter((f) => f.endsWith('.png') && !roles.includes(f.replace('.png', '')));

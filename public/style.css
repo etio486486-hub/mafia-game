@@ -2007,14 +2007,14 @@ body.anim-dawn-rise #phase-overlay {
   position: absolute;
   inset: 0;
   z-index: 0;
-  background: url('/assets/ui/bg_night.png?v=1') center / cover no-repeat;
+  background: url('/assets/ui/bg_night.svg?v=6') center / cover no-repeat;
   opacity: 0.55;
   pointer-events: none;
   transition: opacity 0.8s ease, filter 0.8s ease;
 }
 
 body.phase-day .m42-bg-layer {
-  background-image: url('/assets/ui/bg_day.png?v=1');
+  background-image: url('/assets/ui/bg_day.svg?v=6');
   opacity: 0.7;
 }
 
@@ -2195,7 +2195,8 @@ body.phase-night .m42-bg-layer {
 .m42-role-portrait-wrap {
   flex: 0 0 auto;
   width: 100%;
-  height: clamp(280px, 40dvh, 420px);
+  aspect-ratio: 400 / 520;
+  max-height: min(52dvh, 480px);
   position: relative;
   overflow: hidden;
   background: #0a0c10;
@@ -2209,6 +2210,12 @@ body.phase-night .m42-bg-layer {
   object-fit: cover;
   object-position: center top;
   filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.5));
+}
+
+.m42-role-portrait-wrap img.role-portrait-large {
+  object-fit: cover;
+  object-position: center top;
+  padding: 0;
 }
 
 .m42-role-portrait-wrap .role-portrait-fallback {
@@ -2473,6 +2480,39 @@ body.phase-night .m42-banner-main {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.chat-profile-avatar .chat-avatar-guess-btn {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  color: inherit;
+  font: inherit;
+}
+
+.chat-profile-avatar .chat-avatar-guess-btn:focus-visible {
+  outline: 2px solid rgba(120, 180, 255, 0.95);
+  outline-offset: 2px;
+}
+
+.vote-results-avatar .chat-avatar-guess-btn {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  color: inherit;
+  font: inherit;
 }
 
 .m42-chat-log .chat-bubble {
@@ -2897,6 +2937,18 @@ body.phase-night .m42-banner-main {
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.m42-player-grid .player-card .slot-avatar.is-unknown-role {
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.45);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.m42-player-grid .player-card .slot-avatar.is-unknown-role:hover {
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
 .m42-player-grid .player-card .slot-avatar.has-img {
   background: rgba(0, 0, 0, 0.2);
   overflow: hidden;
@@ -3129,6 +3181,7 @@ body.phase-night .m42-banner-main {
 .phase-transition-overlay {
   background: rgba(0, 0, 0, 0.72);
   animation: fadeIn 0.35s ease;
+  z-index: 3250;
 }
 
 .phase-transition-card {
@@ -3203,8 +3256,11 @@ body.phase-night .m42-banner-main {
 
 .role-reveal-card img {
   width: 100%;
-  flex: 1;
+  height: auto;
+  flex: 0 0 auto;
+  aspect-ratio: 400 / 520;
   object-fit: cover;
+  display: block;
 }
 
 .role-reveal-card .role-reveal-title {
