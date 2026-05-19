@@ -353,7 +353,7 @@ const ROLE_LABELS = {
 
 const rooms = new Map();
 const sessions = new Map();
-const SERVER_STABILITY = '2026-05-19m';
+const SERVER_STABILITY = '2026-05-19n';
 
 app.get('/health', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -801,7 +801,7 @@ function canEmitRoomEvent(room, kind = 'general') {
   return true;
 }
 
-const VOTE_RESULTS_DISPLAY_MS = 4500;
+const VOTE_RESULTS_DISPLAY_MS = 5600;
 
 function clearDayVoteResultsTimer(room) {
   if (!room) return;
@@ -4123,14 +4123,6 @@ function flushDawnMotions(room) {
   if (!room.pendingMotions || !room.pendingMotions.length) return;
   const motions = [...room.pendingMotions];
   broadcastToRoom(room, 'gameMotionBatch', { motions });
-  for (const motion of motions) {
-    broadcastToRoom(room, 'skillNotice', {
-      scope: 'public',
-      kind: motion.type,
-      title: motion.title || '밤 사건',
-      message: motion.message || ''
-    });
-  }
   room.pendingMotions = [];
 }
 
@@ -4339,7 +4331,9 @@ function startDawn(room) {
     room.pendingReporterReveal = null;
   }
 
-  setPhase(room, PHASE.DAWN, TIMERS[PHASE.DAWN]);
+  const motionCount = room.pendingMotions ? room.pendingMotions.length : 0;
+  const dawnMs = Math.max(TIMERS[PHASE.DAWN], 4000 + motionCount * 4200 + 2000);
+  setPhase(room, PHASE.DAWN, dawnMs);
   flushDawnMotions(room);
   room.pendingReporterMotion = null;
   broadcastAnimation(room, 'anim-dawn-rise');

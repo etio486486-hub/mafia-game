@@ -35,6 +35,10 @@ function motionEscapeHtml(s) {
 
 function enqueueMotion(data) {
   if (!data || !data.type) return;
+  if (typeof window.enqueuePresentation === 'function') {
+    window.enqueuePresentation(() => showGameMotion(data), `motion:${data.type}`);
+    return;
+  }
   motionQueue.push(data);
   if (!motionPlaying) playNextMotion();
 }
@@ -143,6 +147,6 @@ function showGameMotion(data) {
 
     const btn = overlay.querySelector('.motion-close');
     if (btn) btn.addEventListener('click', done, { once: true });
-    setTimeout(done, data.duration || 3400);
+    setTimeout(done, data.duration || 4200);
   });
 }

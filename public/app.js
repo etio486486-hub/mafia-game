@@ -869,7 +869,18 @@ function showVoteTimeOverlay() {
   clearTimeout(voteTimeOverlayTimer);
   voteTimeOverlayTimer = setTimeout(() => {
     overlay.hidden = true;
-  }, 2800);
+  }, 3000);
+}
+
+function showVoteTimeOverlayAsync() {
+  return new Promise((resolve) => {
+    showVoteTimeOverlay();
+    clearTimeout(voteTimeOverlayTimer);
+    voteTimeOverlayTimer = setTimeout(() => {
+      hideVoteTimeOverlay();
+      resolve();
+    }, 3000);
+  });
 }
 
 function hideVoteTimeOverlay() {
@@ -915,7 +926,18 @@ function showVoteResultsOverlay(data) {
   clearTimeout(voteResultsOverlayTimer);
   voteResultsOverlayTimer = setTimeout(() => {
     overlay.hidden = true;
-  }, 4200);
+  }, 5000);
+}
+
+function showVoteResultsOverlayAsync(data) {
+  return new Promise((resolve) => {
+    showVoteResultsOverlay(data);
+    clearTimeout(voteResultsOverlayTimer);
+    voteResultsOverlayTimer = setTimeout(() => {
+      hideVoteResultsOverlay();
+      resolve();
+    }, 5000);
+  });
 }
 
 function hideVoteResultsOverlay() {
@@ -1044,7 +1066,7 @@ function renderMyRoleSidebar() {
 let phaseTransitionTimer = null;
 let skillNoticeTimer = null;
 
-function showSkillNotice(data) {
+function showSkillNoticeInner(data) {
   const el = $('#skill-notice');
   const badge = $('#skill-notice-badge');
   const title = $('#skill-notice-title');
@@ -1058,11 +1080,45 @@ function showSkillNotice(data) {
   title.textContent = data.title || '능력 정보';
   body.textContent = data.message || '';
   el.hidden = false;
+  return isPublic;
+}
 
+function showSkillNoticeAsync(data) {
+  return new Promise((resolve) => {
+    const isPublic = showSkillNoticeInner(data);
+    if (isPublic === undefined) {
+      resolve();
+      return;
+    }
+    const ms = isPublic ? 4500 : 9000;
+    clearTimeout(skillNoticeTimer);
+    skillNoticeTimer = setTimeout(() => {
+      const el = $('#skill-notice');
+      if (el) el.hidden = true;
+      resolve();
+    }, ms);
+  });
+}
+
+function showSkillNotice(data) {
+  if (!data) return;
+  const motionKinds = new Set([
+    'mafia_kill', 'doctor_heal', 'soldier_block', 'quiet_night', 'vote_execution',
+    'vote_rejected', 'vote_tie', 'politician_immunity', 'cult_proselytize'
+  ]);
+  if (data.scope === 'public' && motionKinds.has(data.kind)) {
+    return;
+  }
+  if (data.scope === 'public' && typeof window.enqueuePresentation === 'function') {
+    window.enqueuePresentation(() => showSkillNoticeAsync(data), `skill:${data.kind || 'public'}`);
+    return;
+  }
+  showSkillNoticeInner(data);
   clearTimeout(skillNoticeTimer);
   skillNoticeTimer = setTimeout(() => {
-    el.hidden = true;
-  }, isPublic ? 6000 : 9000);
+    const el = $('#skill-notice');
+    if (el) el.hidden = true;
+  }, data.scope === 'public' ? 4500 : 9000);
 }
 
 function showPhaseTransition(kind, title, caption, index = 1) {
@@ -1139,7 +1195,22 @@ function showPhaseTransition(kind, title, caption, index = 1) {
   phaseTransitionTimer = setTimeout(() => {
     overlay.hidden = true;
     overlay.setAttribute('aria-hidden', 'true');
-  }, 3200);
+  }, 3800);
+}
+
+function showPhaseTransitionAsync(kind, title, caption, index = 1) {
+  return new Promise((resolve) => {
+    showPhaseTransition(kind, title, caption, index);
+    clearTimeout(phaseTransitionTimer);
+    phaseTransitionTimer = setTimeout(() => {
+      const ov = getPhaseTransitionOverlay();
+      if (ov) {
+        ov.hidden = true;
+        ov.setAttribute('aria-hidden', 'true');
+      }
+      resolve();
+    }, 3800);
+  });
 }
 
 function showRoleReveal(role) {
@@ -1643,6 +1714,8 @@ function hideExecutionVoteOverlay() {
 }
 
 function dismissGameOverlays() {
+  if (typeof window.clearPresentationQueue === 'function') window.clearPresentationQueue();
+  if (typeof clearMotionQueue === 'function') clearMotionQueue();
   hideExecutionVoteOverlay();
   const overlayIds = [
     'vote-time-overlay',
@@ -1669,7 +1742,6 @@ function dismissGameOverlays() {
   clearTimeout(skillNoticeTimer);
   clearTimeout(voteResultsOverlayTimer);
   clearTimeout(voteTimeOverlayTimer);
-  if (typeof clearMotionQueue === 'function') clearMotionQueue();
 }
 
 let pendingExecutionVote = null;
@@ -2008,22 +2080,49 @@ socket.on('phaseChanged', (data) => {
     AudioManager.playSFX('night');
     if (state && state.canMafiaChat) activeChatChannel = 'mafia';
     const idx = data.nightIndex || (state ? state.nightIndex : 0) || 1;
-    showPhaseTransition('night', `${idx}번째 밤`, '밤이 되었습니다', idx);
+    if (typeof window.enqueuePresentation === 'function') {
+      window.enqueuePresentation(
+        () => showPhaseTransitionAsync('night', `${idx}번째 밤`, '밤이 되었습니다', idx),
+        'phase:night'
+      );
+    } else {
+      showPhaseTransition('night', `${idx}번째 밤`, '밤이 되었습니다', idx);
+    }
   } else if (data.phase === 'dawn') {
     AudioManager.playSFX('day');
     activeChatChannel = 'day';
     const idx = data.dayIndex || (state ? state.dayIndex : 0) || 1;
-    showPhaseTransition('day', '아침이 밝았습니다', '밤의 결과를 확인하세요', idx);
+    if (typeof window.enqueuePresentation === 'function') {
+      window.enqueuePresentation(
+        () => showPhaseTransitionAsync('day', '아침이 밝았습니다', '밤의 결과를 확인하세요', idx),
+        'phase:dawn'
+      );
+    } else {
+      showPhaseTransition('day', '아침이 밝았습니다', '밤의 결과를 확인하세요', idx);
+    }
     updateChatTabs();
   } else if (data.phase === 'day_chat') {
-    if (typeof clearMotionQueue === 'function') clearMotionQueue();
     AudioManager.playSFX('day');
     activeChatChannel = 'day';
-    showToast('낮 토론이 시작되었습니다. 이제 대화할 수 있습니다.');
+    if (typeof window.enqueuePresentation === 'function') {
+      window.enqueuePresentation(() => {
+        showToast('낮 토론이 시작되었습니다. 이제 대화할 수 있습니다.');
+        return Promise.resolve();
+      }, 'toast:day-chat');
+    } else {
+      showToast('낮 토론이 시작되었습니다. 이제 대화할 수 있습니다.');
+    }
     updateChatTabs();
   } else if (data.phase === 'day_vote') {
-    runAnimation('anim-vote', { silent: true });
-    showVoteTimeOverlay();
+    if (typeof window.enqueuePresentation === 'function') {
+      window.enqueuePresentation(async () => {
+        runAnimation('anim-vote', { silent: true });
+        await showVoteTimeOverlayAsync();
+      }, 'vote-time');
+    } else {
+      runAnimation('anim-vote', { silent: true });
+      showVoteTimeOverlay();
+    }
   } else if (data.phase === 'execution_vote') {
     runAnimation('anim-execution', { silent: true });
     updateExecutionVoteOverlay();
@@ -2154,6 +2253,10 @@ socket.on('privateInfo', (data) => {
 });
 
 socket.on('dayVoteResults', (data) => {
+  if (typeof window.enqueuePresentation === 'function') {
+    window.enqueuePresentation(() => showVoteResultsOverlayAsync(data), 'vote-results');
+    return;
+  }
   showVoteResultsOverlay(data);
 });
 
