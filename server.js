@@ -353,7 +353,7 @@ const ROLE_LABELS = {
 
 const rooms = new Map();
 const sessions = new Map();
-const SERVER_STABILITY = '2026-05-19n';
+const SERVER_STABILITY = '2026-05-19q';
 
 app.get('/health', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -1165,7 +1165,7 @@ function getPoliceIntelForReport(room, policeId) {
 function hasPoliceReportInDayChat(room, policeId) {
   if (!policeId) return false;
   return getDayMessages(room).some(
-    (m) => m && m.fromId === policeId && m.text && policeFmt.looksLikePoliceReport(m.text)
+    (m) => m && m.fromId === policeId && m.text && policeFmt.looksLikePoliceReport(m.text, room)
   );
 }
 
@@ -1183,13 +1183,17 @@ function policeReportDayKey(room, policeId) {
 
 function hasPolicePublishedReportToday(room, policeId) {
   if (!room.game?.policeDayReportPublished) return false;
-  return !!room.game.policeDayReportPublished[policeReportDayKey(room, policeId)];
+  const v = room.game.policeDayReportPublished[policeReportDayKey(room, policeId)];
+  return v === 'substantive' || v === true;
 }
 
-function markPolicePublishedReport(room, policeId) {
+function markPolicePublishedReport(room, policeId, opts = {}) {
   if (!room.game) return;
   if (!room.game.policeDayReportPublished) room.game.policeDayReportPublished = {};
-  room.game.policeDayReportPublished[policeReportDayKey(room, policeId)] = true;
+  const substantive = !!(opts && opts.substantive);
+  room.game.policeDayReportPublished[policeReportDayKey(room, policeId)] = substantive
+    ? 'substantive'
+    : 'meta';
 }
 
 function recordPoliceInvestigation(room, policeId, targetId, isMafia) {
@@ -1318,7 +1322,7 @@ function postPolicePublicReport(room, policeIdOptional, opts = {}) {
     pushChat(room, 'day', msg);
     broadcastToRoom(room, 'chatMessage', { channel: 'day', ...msg });
     notePublicPoliceClaim(room, police.id);
-    markPolicePublishedReport(room, police.id);
+    markPolicePublishedReport(room, police.id, { substantive: false });
     console.log(`[POLICE] public report (no intel) by ${police.nickname}`);
     return;
   }
@@ -1340,7 +1344,7 @@ function postPolicePublicReport(room, policeIdOptional, opts = {}) {
     voteIntel.ingestPoliceReportsFromDayChat(room, voteFactHelpers);
   }
   console.log(`[POLICE] public report by ${police.nickname} intel=true`);
-  markPolicePublishedReport(room, police.id);
+  markPolicePublishedReport(room, police.id, { substantive: true });
   postPoliceWithHolgyeongPair(room, police, report.text, { alreadyPosted: true });
 }
 
@@ -1483,25 +1487,39 @@ function handlePoliceReportRequest(room, requester) {
 function replyBotPoliceReport(room, policeBot) {
   if (!policeBot || !policeBot.alive || policeBot.role !== ROLE.POLICE || !policeBot.isBot) return;
   if (room.phase !== PHASE.DAY_CHAT) return;
+  const report = buildPolicePublicReport(room, policeBot.id);
+  const hasIntel = !!(report && report.hasIntel && report.text);
   if (hasPolicePublishedReportToday(room, policeBot.id) || hasPoliceReportInDayChat(room, policeBot.id)) {
     // #region agent log
     agentLog({
       hypothesisId: 'Pc3',
       location: 'server.js:replyBotPoliceReport',
-      message: 'duplicate public report blocked',
+      message: 'duplicate substantive report blocked',
       runId: 'police-fix',
-      data: { police: policeBot.nickname }
+      data: { police: policeBot.nickname, hasIntel }
     });
     // #endregion
     return;
   }
-  const report = buildPolicePublicReport(room, policeBot.id);
-  const text = report && report.hasIntel && report.text
+  const text = hasIntel
     ? report.text
     : '조결 요청 확인했습니다. 이번 밤 수사 기록이 없습니다. 밤에 대상을 지목해 주시면 낮에 조결로 말씀드리겠습니다.';
   postPoliceWithHolgyeongPair(room, policeBot, text);
-  if (report && report.hasIntel) syncPolicePublicIntelAfterReport(room);
-  markPolicePublishedReport(room, policeBot.id);
+  if (hasIntel) {
+    syncPolicePublicIntelAfterReport(room);
+    markPolicePublishedReport(room, policeBot.id, { substantive: true });
+    // #region agent log
+    agentLog({
+      hypothesisId: 'Pc4',
+      location: 'server.js:replyBotPoliceReport',
+      message: 'substantive report posted',
+      runId: 'police-fix',
+      data: { police: policeBot.nickname, preview: String(text).slice(0, 80) }
+    });
+    // #endregion
+  } else {
+    markPolicePublishedReport(room, policeBot.id, { substantive: false });
+  }
 }
 
 /** 마피아·교주팀 봇 중 가짜 경찰 조결을 낼 수 있는 대상 (이미 비경찰 직공으로 고정된 봇 제외) */
@@ -2082,10 +2100,11 @@ function schedulePoliceCitizenDayPlaybook(room) {
         waveIndex
       );
       if (!line) return;
-      if (waveIndex === 0 && !hasPolicePublishedReportToday(room, policeBot.id)
-        && policeFmt.looksLikePoliceReport(line)) {
+      if (waveIndex === 0) {
         const report = buildPolicePublicReport(room, policeBot.id);
-        if (report && report.hasIntel && report.text) {
+        if (report && report.hasIntel && report.text
+          && !hasPoliceReportInDayChat(room, policeBot.id)
+          && !hasPolicePublishedReportToday(room, policeBot.id)) {
           replyBotPoliceReport(room, policeBot);
           return;
         }
@@ -2286,9 +2305,11 @@ function buildSuspicionScores(room, voter, opts = {}) {
     if (!p.alive && scores[p.id] != null) scores[p.id] = 0;
   }
 
-  const cleared = voteFacts.getClearedIds(room, voter, voteFactHelpers);
-  for (const id of cleared) {
-    scores[id] = 0;
+  voteFacts.ingestVoteIntelFromChat(room, voteFactHelpers);
+  for (const p of aliveOthers) {
+    if (voteFacts.isDayVoteTargetForbidden(room, voter, p.id, voteFactHelpers)) {
+      scores[p.id] = 0;
+    }
   }
 
   const m42CultBots = require('./lib/m42-cult-bots');
@@ -2331,37 +2352,92 @@ function pickTopSuspect(room, bot, { excludeMafiaTeam = false, skipBotHumanBias 
   return null;
 }
 
+function sanitizeBotDayVoteTarget(room, bot, targetId) {
+  if (!targetId || targetId === bot.id) return null;
+  if (voteFacts.isDayVoteTargetForbidden(room, bot, targetId, voteFactHelpers)) {
+    return null;
+  }
+  return targetId;
+}
+
 function pickBotDayVoteTarget(room, bot) {
+  voteFacts.ingestVoteIntelFromChat(room, voteFactHelpers);
+
+  const logVotePath = (path, targetId) => {
+    // #region agent log
+    agentLog({
+      hypothesisId: 'VotePile',
+      location: 'server.js:pickBotDayVoteTarget',
+      message: 'bot day vote target picked',
+      runId: 'vote-pile',
+      data: {
+        bot: bot.nickname,
+        role: bot.role,
+        path,
+        target: targetId ? playerName(room, targetId) : null,
+        chatAccusers: targetId
+          ? voteFacts.countRecentChatAccusers(room, targetId, voteFactHelpers)
+          : 0
+      }
+    });
+    // #endregion
+  };
+
+  const resolve = (path, rawId) => {
+    const id = sanitizeBotDayVoteTarget(room, bot, rawId);
+    if (id) logVotePath(path, id);
+    return id;
+  };
+
   if (isMafiaTeam(bot.role)) {
-    const mafiaTarget = voteFacts.pickMafiaTeamDayVote(room, bot, voteFactHelpers);
+    const mafiaTarget = resolve(
+      'mafia_team',
+      voteFacts.pickMafiaTeamDayVote(room, bot, voteFactHelpers)
+    );
     if (mafiaTarget) return mafiaTarget;
   }
 
-  const policeMafia = voteFacts.pickPoliceAccusedMafia(room, bot, voteFactHelpers);
-  if (policeMafia && policeMafia !== bot.id) {
-    return policeMafia;
-  }
+  const policeMafia = resolve(
+    'police_or_chat_accuse',
+    voteFacts.pickPoliceAccusedMafia(room, bot, voteFactHelpers)
+  );
+  if (policeMafia) return policeMafia;
 
-  const factTarget = voteFacts.pickFactBasedDayVote(room, bot, voteFactHelpers);
-  if (factTarget && factTarget !== bot.id
-    && !voteFacts.isPlayerCleared(room, bot, factTarget, voteFactHelpers)) {
-    return factTarget;
-  }
+  const chatPile = resolve(
+    'chat_pile_on',
+    voteFacts.pickChatPileOnDayVote(room, bot, voteFactHelpers)
+  );
+  if (chatPile) return chatPile;
 
-  const consensus = voteFacts.pickConsensusDayVote(room, bot, voteFactHelpers);
-  if (consensus && consensus !== bot.id) return consensus;
+  const factTarget = resolve(
+    'fact',
+    voteFacts.pickFactBasedDayVote(room, bot, voteFactHelpers)
+  );
+  if (factTarget) return factTarget;
 
-  const chatKeyword = voteFacts.pickChatKeywordDayVote(room, bot, voteFactHelpers);
-  if (chatKeyword && chatKeyword !== bot.id) {
-    return chatKeyword;
-  }
+  const consensus = resolve(
+    'consensus',
+    voteFacts.pickConsensusDayVote(room, bot, voteFactHelpers)
+  );
+  if (consensus) return consensus;
 
-  const fallback = voteFacts.pickFallbackDayVoteTarget(room, bot, voteFactHelpers);
-  if (fallback && fallback !== bot.id) {
-    return fallback;
-  }
+  const chatKeyword = resolve(
+    'chat_keyword',
+    voteFacts.pickChatKeywordDayVote(room, bot, voteFactHelpers)
+  );
+  if (chatKeyword) return chatKeyword;
 
-  return voteFacts.pickConsolidatedDayVote(room, bot, voteFactHelpers);
+  const fallback = resolve(
+    'fallback',
+    voteFacts.pickFallbackDayVoteTarget(room, bot, voteFactHelpers)
+  );
+  if (fallback) return fallback;
+
+  const consolidated = resolve(
+    'consolidated',
+    voteFacts.pickConsolidatedDayVote(room, bot, voteFactHelpers)
+  );
+  return consolidated;
 }
 
 function pickBotExecutionVoteFromFacts(room, bot, candidate) {
@@ -2398,7 +2474,7 @@ botBrain.configure({
   pickFactChatAccuseTarget: (room, bot) => voteFacts.pickFactChatAccuseTarget(room, bot, voteFactHelpers),
   pickFactBasedExecutionVote: pickBotExecutionVoteFromFacts,
   getClearedPlayerIds: (room, bot) => voteFacts.getClearedIds(room, bot, voteFactHelpers),
-  isPlayerClearedByFacts: (room, bot, id) => voteFacts.isPlayerCleared(room, bot, id, voteFactHelpers),
+  isPlayerClearedByFacts: (room, bot, id) => voteFacts.isDayVoteTargetForbidden(room, bot, id, voteFactHelpers),
   parsePoliceReportFromText: (room, text) => voteFacts.parsePoliceReportFromText(room, text),
   getAccuseReasonForTarget: (room, bot, id) => voteFacts.getAccuseReasonForTarget(room, bot, id, voteFactHelpers),
   formatAccuseLine: (room, bot, id, speaker) => voteFacts.formatAccuseLine(room, bot, id, voteFactHelpers, speaker),
@@ -2666,9 +2742,9 @@ function applyBotDayVote(room, bot) {
   if (!targetId) {
     // #region agent log
     agentLog({
-      hypothesisId: 'V1',
+      hypothesisId: 'VoteImmune',
       location: 'server.js:applyBotDayVote',
-      message: 'bot day vote skipped no target',
+      message: 'bot day vote skipped no valid target',
       runId: 'vote-fix',
       data: { bot: bot.nickname, role: bot.role, alive: getAlivePlayers(room).length }
     });
@@ -2703,12 +2779,54 @@ function runBotDayVotes(room) {
   if (voteIntel.ingestPoliceReportsFromDayChat) {
     voteIntel.ingestPoliceReportsFromDayChat(room, voteFactHelpers);
   }
+  if (voteIntel.ingestPoliticianClaimsFromDayChat) {
+    voteIntel.ingestPoliticianClaimsFromDayChat(room, voteFactHelpers);
+  }
+  voteFacts.ingestVoteIntelFromChat(room, voteFactHelpers);
   ingestAllDayChatSuspicion(room);
   const bots = getBots(room).filter(p => p.alive);
   let voted = 0;
   for (const bot of bots) {
     if (applyBotDayVote(room, bot)) voted++;
   }
+
+  const g = room.game;
+  const tally = buildDayVoteTally(room);
+  let leaderId = null;
+  let leaderVotes = 0;
+  for (const [id, count] of Object.entries(tally)) {
+    if (count > leaderVotes) {
+      leaderVotes = count;
+      leaderId = id;
+    }
+  }
+  if (leaderId && leaderVotes >= 2 && g.dayVotes) {
+    const pileTarget = voteFacts.pickChatPileOnDayVote(room, bots[0] || { id: '' }, voteFactHelpers);
+    if (!pileTarget || pileTarget === leaderId) {
+      for (const bot of bots) {
+        if (!bot.alive || isMafiaTeam(bot.role)) continue;
+        if (voteFacts.isDayVoteTargetForbidden(room, bot, leaderId, voteFactHelpers)) continue;
+        if (g.dayVotes[bot.id] !== leaderId) {
+          g.dayVotes[bot.id] = leaderId;
+          voted++;
+          // #region agent log
+          agentLog({
+            hypothesisId: 'VotePile',
+            location: 'server.js:runBotDayVotes',
+            message: 'bot revoted to tally leader',
+            runId: 'vote-pile',
+            data: {
+              bot: bot.nickname,
+              leader: playerName(room, leaderId),
+              leaderVotes
+            }
+          });
+          // #endregion
+        }
+      }
+    }
+  }
+
   if (voted > 0) broadcastState(room);
 }
 
@@ -5711,6 +5829,13 @@ function recordDayVote(room, socket, targetId) {
   } else {
     const target = getPlayerById(room, targetId);
     if (!target || !target.alive) return reject(socket, '생존자에게만 투표할 수 있습니다.');
+    voteFacts.ingestVoteIntelFromChat(room, voteFactHelpers);
+    if (voteFacts.isDayVoteTargetForbidden(room, player, targetId, voteFactHelpers)) {
+      if (target.role === ROLE.POLITICIAN) {
+        return reject(socket, '정치인은 투표로 처형되지 않습니다. 다른 대상을 선택하세요.');
+      }
+      return reject(socket, '조사·취재·직공으로 확인된 시민에게는 투표할 필요가 없습니다.');
+    }
     room.game.dayVotes[player.id] = targetId;
   }
   broadcastState(room);
