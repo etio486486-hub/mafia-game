@@ -10,6 +10,7 @@ const ROLES = [
   { id: 'mafia', label: '마피아', color: '#8b1a1a' },
   { id: 'spy', label: '스파이', color: '#5c2d6e' },
   { id: 'citizen', label: '시민', color: '#3a5a7a' },
+  { id: 'private_detective', label: '사립탐정', color: '#4a3820' },
   { id: 'police', label: '경찰', color: '#1e4a8c' },
   { id: 'doctor', label: '의사', color: '#1a6b4a' },
   { id: 'soldier', label: '군인', color: '#4a5568' },
@@ -33,7 +34,8 @@ const MOTIONS = [
   { file: 'spy_investigate', label: '스파이 조사' },
   { file: 'politician_immunity', label: '면역' },
   { file: 'reporter_scoop', label: '취재' },
-  { file: 'graverobber_inherit', label: '계승' }
+  { file: 'graverobber_inherit', label: '계승' },
+  { file: 'private_detective_search', label: '사탐 관찰' }
 ];
 
 function roleSvg(role) {

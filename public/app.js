@@ -48,6 +48,7 @@ const PHASE_LABELS = {
 
 const ROLE = {
   MAFIA: 'mafia', SPY: 'spy', CITIZEN: 'citizen',
+  PRIVATE_DETECTIVE: 'private_detective',
   POLICE: 'police', DOCTOR: 'doctor', SOLDIER: 'soldier',
   POLITICIAN: 'politician', MEDIUM: 'medium', REPORTER: 'reporter',
   GRAVEROBBER: 'graverobber', CULT_LEADER: 'cult_leader'
@@ -68,6 +69,11 @@ const ROLE_GUIDE = {
     name: '일반 시민', team: '시민 팀',
     desc: '특수 능력은 없습니다. 낮 토론과 투표로 마피아를 찾아내세요.',
     tip: '정보 공유와 투표가 무기입니다'
+  },
+  [ROLE.PRIVATE_DETECTIVE]: {
+    name: '사립탐정', team: '시민 팀',
+    desc: '밤에 생존자 한 명을 지정해 그 사람이 누구에게 능력(손)을 뻗는지 관찰합니다. 경찰·의사·마피아 등 액티브 직의 지목일 가능성을 멘트로 안내합니다.',
+    tip: '밤 → 관찰할 사람 선택 → 관찰 확정'
   },
   [ROLE.POLICE]: {
     name: '경찰', team: '시민 팀',
@@ -262,7 +268,7 @@ function canSelectActionTarget() {
   if (state.phase === 'day_vote') return true;
   if (state.phase === 'night') {
     if (state.myRole === ROLE.MEDIUM) return !state.mediumResolved;
-    return [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER].includes(state.myRole);
+    return [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER, ROLE.PRIVATE_DETECTIVE].includes(state.myRole);
   }
   return false;
 }
@@ -282,7 +288,10 @@ function canSelectPlayerSlot(p) {
       }
       return false;
     }
-    return p.alive && [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER].includes(state.myRole);
+    if (state.myRole === ROLE.PRIVATE_DETECTIVE && state.myPrivateDetectiveWatchId) {
+      return false;
+    }
+    return p.alive && [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER, ROLE.PRIVATE_DETECTIVE].includes(state.myRole);
   }
   return false;
 }
@@ -291,6 +300,8 @@ let activeChatChannel = 'day';
 const chatStore = { lobby: [], day: [], mafia: [], cult: [], dead: [], lastWords: [] };
 let timerInterval = null;
 let phaseEndEstimate = 0;
+let forceChatScrollBottom = false;
+let forceLobbyScrollBottom = false;
 
 const socket = io({
   reconnection: true,
@@ -477,7 +488,7 @@ function flashPlayerCard(playerId, fxClass) {
 }
 
 function hasNightSkill(role) {
-  return [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.MEDIUM].includes(role);
+  return [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.MEDIUM, ROLE.CULT_LEADER, ROLE.PRIVATE_DETECTIVE].includes(role);
 }
 
 function setPhaseTheme(phase) {
@@ -748,6 +759,9 @@ function renderLobbySlots() {
 function renderLobbyChat() {
   const list = $('#lobby-chat-messages');
   if (!list) return;
+  const wasNearBottom =
+    forceLobbyScrollBottom
+    || (list.scrollHeight - (list.scrollTop + list.clientHeight) <= 40);
   const msgs = chatStore.lobby || [];
   const myId = state ? state.myPlayerId : null;
   list.innerHTML = msgs.map(m => {
@@ -759,10 +773,11 @@ function renderLobbyChat() {
     const nameHtml = isMine ? '' : `<span class="chat-name">${escapeHtml(m.from)}</span>`;
     return `<li class="chat-msg ${cls}">${nameHtml}<span class="chat-bubble">${escapeHtml(m.text)}</span></li>`;
   }).join('');
-  list.scrollTop = list.scrollHeight;
+  if (wasNearBottom) list.scrollTop = list.scrollHeight;
+  forceLobbyScrollBottom = false;
 }
 
-const ROLE_PORTRAIT_VERSION = '5';
+const ROLE_PORTRAIT_VERSION = '6';
 const UI_ASSET_VERSION = '6';
 const PHASE_ILLUSTRATION_COUNT = 5;
 
@@ -799,16 +814,63 @@ function getPlayerSlotIndex(playerId) {
   return idx >= 0 ? idx + 1 : '?';
 }
 
+/** 채팅·투표 등: renderPlayerGrid와 동일 규칙으로 직업 초상(공개·맞경·유추·사망 숨김) */
 function buildPlayerAvatarInner(playerId) {
-  const isSelf = state && playerId === state.myPlayerId;
+  const myId = state && state.myPlayerId;
+  const isSelf = playerId === myId;
   if (isSelf && state.myRole) return buildRolePortraitHtml(state.myRole);
+
   const note = getPlayerNote(playerId);
-  if (note.guessedRole) {
-    const label = formatGuessedRoleLabel(note.guessedRole);
+  const p = state && state.players && state.players.find((pl) => pl.id === playerId);
+
+  if (!p) {
+    if (note.guessedRole) {
+      const guessed = note.guessedRole;
+      const label = formatGuessedRoleLabel(guessed);
+      const initial = (ROLE_GUIDE[guessed] && ROLE_GUIDE[guessed].name.slice(0, 1)) || '?';
+      return `<img src="${rolePortraitUrl(guessed)}" alt="${escapeHtml(label)}" loading="lazy" onerror="${rolePortraitImgOnerror(initial, guessed)}">`;
+    }
+    const pid = Number(playerId);
+    const safeId = Number.isFinite(pid) ? String(pid) : '';
+    if (!safeId) return '<span class="role-portrait-fallback">?</span>';
+    return '<button type="button" class="chat-avatar-guess-btn" data-guess-id="' + safeId + '" aria-label="직업 유추">' +
+      '<span class="role-portrait-fallback">?</span></button>';
+  }
+
+  const confirmedRole =
+    p.publicConfirmedRole && ROLE_GUIDE[p.publicConfirmedRole] ? p.publicConfirmedRole : null;
+  const matchedClaimRole =
+    p.matchedClaimRole && ROLE_GUIDE[p.matchedClaimRole] ? p.matchedClaimRole : null;
+  const isMatchedPoliceClaim = !!p.isMatchedPoliceClaim && !confirmedRole;
+  const isMatchedRoleClaim = !!matchedClaimRole && !confirmedRole;
+  const isTeammate = !isSelf && p.isMafiaTeammate;
+  const isCultFollower = !isSelf && p.isCultFollower;
+  const isDead = !p.alive;
+  const deadHasPublicRoleHint = !!(
+    confirmedRole
+    || isMatchedPoliceClaim
+    || isMatchedRoleClaim
+    || isTeammate
+    || isCultFollower
+  );
+  const hideDeadPrivateGuess = isDead && !deadHasPublicRoleHint;
+  const showGuessedPortrait = !!(note.guessedRole && !hideDeadPrivateGuess);
+
+  let roleForAvatar = null;
+  if (isTeammate) roleForAvatar = p.role;
+  else if (isCultFollower) roleForAvatar = p.role;
+  else if (confirmedRole) roleForAvatar = confirmedRole;
+  else if (isMatchedRoleClaim) roleForAvatar = matchedClaimRole;
+  else if (isMatchedPoliceClaim) roleForAvatar = ROLE.POLICE;
+
+  if (roleForAvatar) return buildRolePortraitHtml(roleForAvatar);
+  if (showGuessedPortrait) {
     const guessed = note.guessedRole;
+    const label = formatGuessedRoleLabel(guessed);
     const initial = (ROLE_GUIDE[guessed] && ROLE_GUIDE[guessed].name.slice(0, 1)) || '?';
     return `<img src="${rolePortraitUrl(guessed)}" alt="${escapeHtml(label)}" loading="lazy" onerror="${rolePortraitImgOnerror(initial, guessed)}">`;
   }
+
   const pid = Number(playerId);
   const safeId = Number.isFinite(pid) ? String(pid) : '';
   if (!safeId) return '<span class="role-portrait-fallback">?</span>';
@@ -1369,17 +1431,41 @@ function renderPlayerGrid() {
     const isCandidate = p.id === state.executionCandidateId;
     const note = getPlayerNote(p.id);
     const guessedLabel = formatGuessedRoleLabel(note.guessedRole);
+    const confirmedRole =
+      p.publicConfirmedRole && ROLE_GUIDE[p.publicConfirmedRole] ? p.publicConfirmedRole : null;
+    const matchedClaimRole =
+      p.matchedClaimRole && ROLE_GUIDE[p.matchedClaimRole] ? p.matchedClaimRole : null;
+    const isMatchedPoliceClaim = !!p.isMatchedPoliceClaim && !confirmedRole;
+    const isMatchedRoleClaim = !!matchedClaimRole && !confirmedRole;
+    const confirmedLabel = confirmedRole ? formatGuessedRoleLabel(confirmedRole) : '';
+    const isTeammate = !isSelf && p.isMafiaTeammate;
+    const isCultFollower = !isSelf && p.isCultFollower;
+    /** 사망자: 성불·기자 등 공개 확정 또는 맞경/맞직·팀 공개가 없으면 직업 초상·유추 표시 숨김 */
+    const deadHasPublicRoleHint = !!(
+      confirmedRole
+      || isMatchedPoliceClaim
+      || isMatchedRoleClaim
+      || isTeammate
+      || isCultFollower
+    );
+    const hideDeadPrivateGuess = isDead && !deadHasPublicRoleHint;
+    const showGuessedPortrait = !!(note.guessedRole && !hideDeadPrivateGuess);
+    const visibleGuessedLabel = showGuessedPortrait ? guessedLabel : '';
     let cls = 'player-card';
     if (isDead) cls += ' dead';
     if (state.phase === 'night' && state.myRole === ROLE.MEDIUM && isDead && canSelectPlayerSlot(p)) cls += ' medium-target';
     if (selectedTargetId === p.id) cls += ' selected';
     if (isCandidate) cls += ' candidate';
     if (isSelf) cls += ' is-self';
-    if (note.guessedRole) cls += ' has-guess';
-    const isTeammate = !isSelf && p.isMafiaTeammate;
-    const isCultFollower = !isSelf && p.isCultFollower;
+    if (showGuessedPortrait || confirmedRole || isMatchedPoliceClaim || isMatchedRoleClaim) cls += ' has-guess';
+    const isPdWatch = state.myRole === ROLE.PRIVATE_DETECTIVE && state.myPrivateDetectiveWatchId === p.id;
+    const isPdPointed = state.myRole === ROLE.PRIVATE_DETECTIVE && state.myPrivateDetectivePointedId === p.id;
     if (isTeammate) cls += ' mafia-teammate';
     if (isCultFollower) cls += ' cult-follower';
+    if (isPdWatch) cls += ' pd-watch';
+    if (isPdPointed) cls += ' pd-pointed';
+    if (isMatchedPoliceClaim) cls += ' matched-police';
+    if (isMatchedRoleClaim) cls += ' matched-role';
 
     let status = isDead ? '사망' : (p.connected ? '' : '재연결');
     if (isCandidate) status = '처형 후보';
@@ -1387,10 +1473,17 @@ function renderPlayerGrid() {
     if (isCultFollower) status = status || '신도';
 
     const teammateRole = isTeammate ? p.role : (isCultFollower ? p.role : null);
-    const showRoleImg = (isSelf && state.myRole) || teammateRole;
+    let roleForAvatar = null;
+    if (isSelf && state.myRole) roleForAvatar = state.myRole;
+    else if (teammateRole) roleForAvatar = teammateRole;
+    else if (confirmedRole) roleForAvatar = confirmedRole;
+    else if (isMatchedRoleClaim) roleForAvatar = matchedClaimRole;
+    else if (isMatchedPoliceClaim) roleForAvatar = ROLE.POLICE;
+
+    const showRoleImg = !!roleForAvatar;
     const avatarInner = showRoleImg
-      ? buildRolePortraitHtml(isSelf ? state.myRole : teammateRole)
-      : (note.guessedRole
+      ? buildRolePortraitHtml(roleForAvatar)
+      : (showGuessedPortrait
         ? (() => {
           const guessed = note.guessedRole;
           const gi = (ROLE_GUIDE[guessed] && ROLE_GUIDE[guessed].name.slice(0, 1)) || '?';
@@ -1403,8 +1496,10 @@ function renderPlayerGrid() {
       guessHtml = `<span class="slot-team-badge role-${p.role}" title="마피아 팀">${escapeHtml(p.roleLabel || '팀')}</span>`;
     } else if (isCultFollower) {
       guessHtml = `<span class="slot-team-badge role-${p.role}" title="교주팀 신도">${escapeHtml(p.roleLabel || '신도')}</span>`;
-    } else if (guessedLabel) {
-      guessHtml = `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(guessedLabel)}</button>`;
+    } else if (confirmedLabel) {
+      guessHtml = `<button type="button" class="slot-guess-btn is-confirmed role-${confirmedRole}" data-guess-id="${p.id}" title="확정 정보는 유지되며, 개인 직업 유추를 따로 기록할 수 있습니다">${escapeHtml(confirmedLabel)}</button>`;
+    } else if (visibleGuessedLabel) {
+      guessHtml = `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(visibleGuessedLabel)}</button>`;
     } else {
       guessHtml = `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`;
     }
@@ -1416,13 +1511,25 @@ function renderPlayerGrid() {
       ? `<button type="button" class="slot-target-btn${selectedTargetId === p.id || state.myDayVoteTarget === p.id ? ' active' : ''}" data-target-id="${p.id}" title="능력/투표 대상">◎</button>`
       : '';
 
-    const unknownRole = !showRoleImg && !note.guessedRole;
-    const avatarCls = `slot-avatar${showRoleImg || note.guessedRole ? ' has-img' : ''}${unknownRole ? ' is-unknown-role' : ''}`;
+    const unknownRole = !showRoleImg && !showGuessedPortrait;
+    const avatarCls = `slot-avatar${showRoleImg || showGuessedPortrait ? ' has-img' : ''}${unknownRole ? ' is-unknown-role' : ''}`;
+    const pdMark = isPdPointed
+      ? '<span class="slot-pd-mark is-pointed" title="사립탐정 관찰 결과: 이 플레이어를 지목함">☞</span>'
+      : (isPdWatch
+        ? '<span class="slot-pd-mark is-watch" title="사립탐정 관찰 대상">👁</span>'
+        : '');
+    const claimMark = isMatchedPoliceClaim
+      ? '<span class="slot-claim-mark is-matched-police" title="맞경(경찰 주장 충돌): 아직 확정되지 않았습니다">맞경</span>'
+      : (isMatchedRoleClaim
+        ? `<span class="slot-claim-mark is-matched-role" title="맞직업(직업 주장 충돌): 아직 확정되지 않았습니다">맞직업</span>`
+        : '');
 
     return `<div class="${cls}" data-id="${p.id}">` +
       `<span class="slot-num">${i + 1}</span>` +
       targetBtn +
       `<span class="slot-key">F${i + 1}</span>` +
+      pdMark +
+      claimMark +
       `<button type="button" class="slot-select${canSelect ? '' : ' is-disabled'}" data-target-id="${p.id}" title="${canSelect ? '능력/투표 대상 선택' : ''}"${canSelect ? '' : ' disabled'}>` +
       `<div class="${avatarCls}"${unknownRole ? ` data-guess-id="${p.id}" title="직업 유추"` : ''}>${avatarInner}</div>` +
       `<div class="name">${escapeHtml(p.nickname)}${isSelf ? ' (나)' : ''}</div>` +
@@ -1531,6 +1638,17 @@ function renderActionPanel() {
     if (state.myRole === ROLE.POLICE && state.policeResolved) {
       hint.textContent = '이번 밤 조사를 완료했습니다. 낮에 경조결·조결로 결과를 공개할 수 있습니다.';
     }
+    if (state.myRole === ROLE.PRIVATE_DETECTIVE) {
+      addConfirmBtn(btns, '관찰 확정', () => emitNightAction('privateDetectiveObserve'));
+      if (state.myPrivateDetectiveWatchId) {
+        const w = state.players.find((p) => p.id === state.myPrivateDetectiveWatchId);
+        hint.textContent = w
+          ? `${w.nickname}님을 관찰 지정했습니다. 이번 밤에는 대상 변경이 잠겨 있습니다. 새벽에 손 방향 결과가 옵니다.`
+          : '관찰 대상이 서버에 반영되었습니다.';
+      } else {
+        hint.textContent = '생존자 한 명을 선택한 뒤 「관찰 확정」— 그 사람이 밤에 누구에게 손을 뻗는지(경찰·의사·마피아 등) 추정 멘트로 받습니다.';
+      }
+    }
     if (state.myRole === ROLE.DOCTOR) addConfirmBtn(btns, '치료', () => emitNightAction('doctorHeal'));
     if (state.myRole === ROLE.MEDIUM) {
       if (state.mediumResolved) {
@@ -1626,6 +1744,12 @@ function emitNightAction(event) {
     if (!target || target.alive) return showToast('사망자만 성불할 수 있습니다.');
     socket.emit('mediumPurify', { targetId: selectedTargetId });
     runAnimation('anim-investigate', { targetId: selectedTargetId });
+    return;
+  }
+  if (event === 'privateDetectiveObserve') {
+    socket.emit('privateDetectiveObserve', { targetId: selectedTargetId });
+    runAnimation('anim-investigate', { targetId: selectedTargetId, cardFx: null });
+    showToast('관찰 대상을 서버에 전송했습니다.');
     return;
   }
   socket.emit(event, { targetId: selectedTargetId });
@@ -1847,7 +1971,12 @@ function getChatMessagesForView() {
 function renderChat() {
   const msgs = getChatMessagesForView();
   const myId = state ? state.myPlayerId : null;
-  $('#chat-messages').innerHTML = msgs.map(m => {
+  const list = $('#chat-messages');
+  if (!list) return;
+  const wasNearBottom =
+    forceChatScrollBottom
+    || (list.scrollHeight - (list.scrollTop + list.clientHeight) <= 48);
+  list.innerHTML = msgs.map(m => {
     if (m.system) {
       return `<li class="chat-msg system"><span class="chat-bubble system">${escapeHtml(m.text)}</span></li>`;
     }
@@ -1867,8 +1996,8 @@ function renderChat() {
       `</div>` +
       `</li>`;
   }).join('');
-  const list = $('#chat-messages');
-  list.scrollTop = list.scrollHeight;
+  if (wasNearBottom) list.scrollTop = list.scrollHeight;
+  forceChatScrollBottom = false;
 }
 
 function escapeHtml(s) {
@@ -2401,6 +2530,7 @@ $('#lobby-chat-input')?.addEventListener('keydown', (e) => { if (e.key === 'Ente
 function sendLobbyChat() {
   const text = ($('#lobby-chat-input').value || '').trim();
   if (!text) return;
+  forceLobbyScrollBottom = true;
   socket.emit('lobbyChat', { text });
   $('#lobby-chat-input').value = '';
 }
@@ -2408,6 +2538,7 @@ function sendLobbyChat() {
 function sendChat() {
   const text = ($('#chat-input').value || '').trim();
   if (!text) return;
+  forceChatScrollBottom = true;
   const me = state && state.players.find(p => p.id === state.myPlayerId);
   let eventName = 'chat';
   if (activeChatChannel === 'mafia') eventName = 'mafiaChat';

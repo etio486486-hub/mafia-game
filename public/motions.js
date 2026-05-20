@@ -1,11 +1,11 @@
 /* Game motion / cutscene system (Mafia42-style) */
-const MOTION_ASSET_VERSION = '6';
+const MOTION_ASSET_VERSION = '8';
 
 const MOTION_TYPES = [
   'vote_execution', 'vote_rejected', 'vote_tie', 'quiet_night', 'mafia_kill',
   'doctor_heal', 'soldier_block', 'police_mafia', 'police_innocent',
   'spy_contact', 'spy_investigate', 'madam_silence', 'politician_immunity',
-  'reporter_scoop', 'graverobber_inherit', 'cult_proselytize'
+  'reporter_scoop', 'graverobber_inherit', 'cult_proselytize', 'private_detective_search'
 ];
 
 function motionTypeKey(type) {
@@ -69,20 +69,6 @@ function showGameMotion(data) {
 
     const scenePng = motionScenePngUrl(data.type);
     const sceneSvg = motionSceneSvgUrl(data.type);
-    // #region agent log
-    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-      body: JSON.stringify({
-        sessionId: 'a38a8e',
-        hypothesisId: 'MotionPng',
-        location: 'public/motions.js:showGameMotion',
-        message: 'motion load png first',
-        data: { type: data.type, scenePng },
-        timestamp: Date.now()
-      })
-    }).catch(() => {});
-    // #endregion
     overlay.innerHTML =
       '<div class="motion-panel">' +
       '<div class="motion-header">' + motionEscapeHtml(data.title || '') + '</div>' +
@@ -102,35 +88,11 @@ function showGameMotion(data) {
           img.src = sceneSvg;
           return;
         }
-        fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-          body: JSON.stringify({
-            sessionId: 'a38a8e',
-            hypothesisId: 'MotionFail',
-            location: 'public/motions.js:showGameMotion:onerror',
-            message: 'motion png+svg failed',
-            data: { type: data.type },
-            timestamp: Date.now()
-          })
-        }).catch(() => {});
         img.alt = data.title || data.type || 'scene';
       };
       img.onload = () => {
         if (img.dataset.logged) return;
         img.dataset.logged = '1';
-        fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-          body: JSON.stringify({
-            sessionId: 'a38a8e',
-            hypothesisId: 'MotionOk',
-            location: 'public/motions.js:showGameMotion:onload',
-            message: 'motion img loaded',
-            data: { type: data.type, src: String(img.src || '').slice(-48) },
-            timestamp: Date.now()
-          })
-        }).catch(() => {});
       };
       img.src = scenePng;
     }

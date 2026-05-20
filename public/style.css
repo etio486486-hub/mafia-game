@@ -672,6 +672,33 @@ input:disabled {
   color: var(--muted);
 }
 
+.slot-pd-mark {
+  position: absolute;
+  top: 4px;
+  left: 28px;
+  z-index: 4;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.64rem;
+  font-weight: 700;
+  color: #f8fafc;
+  border: 1px solid rgba(15, 23, 42, 0.65);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.slot-pd-mark.is-watch {
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
+}
+
+.slot-pd-mark.is-pointed {
+  background: linear-gradient(135deg, #b45309, #d97706);
+}
+
 .player-card.candidate {
   border-color: var(--danger);
 }
@@ -2994,6 +3021,12 @@ body.phase-night .m42-banner-main {
   border: 1px dashed rgba(255, 255, 255, 0.12);
 }
 
+.m42-player-grid .player-card .slot-guess-btn.is-confirmed {
+  background: rgba(201, 162, 74, 0.22);
+  color: #f7d79a;
+  border: 1px solid rgba(201, 162, 74, 0.45);
+}
+
 .m42-player-grid .player-card .slot-guess-btn:hover {
   filter: brightness(1.08);
 }
@@ -3066,6 +3099,42 @@ body.phase-night .m42-banner-main {
 .m42-player-grid .player-card.dead.medium-target.selected {
   border-color: rgba(155, 89, 182, 0.75);
   box-shadow: 0 0 0 2px rgba(155, 89, 182, 0.35);
+}
+
+.m42-player-grid .player-card .slot-claim-mark {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #ffe8bd;
+  border: 1px solid rgba(249, 115, 22, 0.55);
+  background: rgba(120, 53, 15, 0.45);
+  backdrop-filter: blur(1px);
+  pointer-events: none;
+}
+
+.m42-player-grid .player-card.matched-police .slot-avatar {
+  box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.45);
+}
+
+.m42-player-grid .player-card .slot-claim-mark.is-matched-role {
+  color: #dbeafe;
+  border-color: rgba(96, 165, 250, 0.55);
+  background: rgba(30, 58, 138, 0.45);
+}
+
+.m42-player-grid .player-card.matched-role .slot-avatar {
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.45);
 }
 
 .skill-notice {
