@@ -43,7 +43,8 @@ function resolveMotionAsset(filename) {
     const candidates = [
       path.join(__dirname, 'public', 'assets', 'motions', name),
       path.join(__dirname, 'assets', 'motions', name),
-      path.join(__dirname, 'assets', name)
+      path.join(__dirname, 'assets', `${base}${ext}`),
+      path.join(__dirname, `${base}${ext}`)
     ];
     for (const p of candidates) {
       if (fs.existsSync(p)) return p;
@@ -58,7 +59,9 @@ function resolveRoleAsset(role) {
     const filename = `${base}${ext}`;
     const candidates = [
       path.join(__dirname, 'public', 'assets', 'roles', filename),
-      path.join(__dirname, 'assets', 'roles', filename)
+      path.join(__dirname, 'assets', 'roles', filename),
+      path.join(__dirname, 'assets', `${base}${ext}`),
+      path.join(__dirname, `${base}${ext}`)
     ];
     for (const p of candidates) {
       if (fs.existsSync(p)) return p;
@@ -101,8 +104,14 @@ function ensurePublicAssets() {
   let rolesCopied = 0;
   for (const role of ROLE_ASSET_NAMES) {
     const dst = path.join(roleDstDir, `${role}.png`);
-    const src = path.join(__dirname, 'assets', 'roles', `${role}.png`);
-    if (copyIfExists(src, dst)) rolesCopied++;
+    const srcList = [
+      path.join(__dirname, 'assets', 'roles', `${role}.png`),
+      path.join(__dirname, 'assets', `${role}.png`),
+      path.join(__dirname, `${role}.png`)
+    ];
+    for (const src of srcList) {
+      if (copyIfExists(src, dst)) { rolesCopied++; break; }
+    }
     const dstSvg = path.join(roleDstDir, `${role}.svg`);
     const srcSvg = path.join(__dirname, 'assets', 'roles', `${role}.svg`);
     if (copyIfExists(srcSvg, dstSvg)) rolesCopied++;
@@ -175,8 +184,14 @@ function ensurePlaceholderAssets() {
   }
 }
 
-ensurePublicAssets();
+const assetBootstrap = ensurePublicAssets();
 ensurePlaceholderAssets();
+const NEW_ROLE_ASSETS = ['cleric', 'terrorist', 'beast_man', 'cultist'];
+for (const role of NEW_ROLE_ASSETS) {
+  const resolved = resolveRoleAsset(role);
+  console.log(`[ASSETS] ${role} portrait => ${resolved ? path.relative(__dirname, resolved) : 'MISSING (SVG fallback)'}`);
+}
+console.log(`[ASSETS] bootstrap copied roles=${assetBootstrap.rolesCopied} motions=${assetBootstrap.motionsCopied}`);
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
@@ -212,6 +227,8 @@ app.use('/assets/ui', express.static(path.join(__dirname, 'public', 'assets', 'u
 app.use('/assets/ui', express.static(path.join(__dirname, 'assets', 'ui')));
 app.use('/assets/motions', express.static(path.join(__dirname, 'public', 'assets', 'motions')));
 app.use('/assets/roles', express.static(path.join(__dirname, 'public', 'assets', 'roles')));
+app.use('/assets/roles', express.static(path.join(__dirname, 'assets', 'roles')));
+app.use('/assets/roles', express.static(path.join(__dirname, 'assets')));
 app.use('/assets/motions', express.static(path.join(__dirname, 'assets')));
 app.use(express.static(PUBLIC_DIR, {
   setHeaders(res, filePath) {
@@ -2487,6 +2504,7 @@ function sanitizeBotDayVoteTarget(room, bot, targetId) {
 
 function pickBotDayVoteTarget(room, bot) {
   voteFacts.ingestVoteIntelFromChat(room, voteFactHelpers);
+  voteFacts.syncStalemateJatuFromGameState(room, voteFactHelpers);
   voteFacts.syncJatuCoordinationFromDayChat(room, voteFactHelpers);
 
   const logVotePath = (path, targetId) => {
@@ -2665,6 +2683,55 @@ Object.assign(voteFactHelpers, {
   hasPoliceReportInDayChat
 });
 
+const MAFIA_KILL_STALE_FAILS = 2;
+
+function ensureMafiaKillBlockedCounts(room) {
+  if (!room.game) return {};
+  if (!room.game.mafiaKillBlockedCounts) room.game.mafiaKillBlockedCounts = {};
+  return room.game.mafiaKillBlockedCounts;
+}
+
+function getMafiaKillBlockedCount(room, targetId) {
+  if (!targetId) return 0;
+  return ensureMafiaKillBlockedCounts(room)[targetId] || 0;
+}
+
+function recordMafiaKillSurvived(room, targetId) {
+  if (!room.game || !targetId) return;
+  const counts = ensureMafiaKillBlockedCounts(room);
+  counts[targetId] = (counts[targetId] || 0) + 1;
+  console.log(
+    `[BOT] mafia kill blocked streak on ${playerName(room, targetId)} -> ${counts[targetId]}`
+  );
+}
+
+function applyMafiaKillStalePenalties(room, scores) {
+  for (const p of getAlivePlayers(room)) {
+    if (isMafiaTeam(p.role)) continue;
+    const fails = getMafiaKillBlockedCount(room, p.id);
+    if (fails <= 0) continue;
+    const cur = scores[p.id] || 0;
+    if (fails >= MAFIA_KILL_STALE_FAILS) {
+      scores[p.id] = Math.max(0, cur - 14 - (fails - MAFIA_KILL_STALE_FAILS) * 4);
+    } else {
+      scores[p.id] = Math.max(0, cur - 5);
+    }
+  }
+}
+
+function boostMafiaKillAlternateRoleClaims(room, mafiaBot, scores) {
+  const claims = m42Bluff.scanRoleClaims(room, voteFactHelpers);
+  for (const role of [ROLE.DOCTOR, ROLE.REPORTER, ROLE.SOLDIER, ROLE.MEDIUM]) {
+    for (const c of claims[role] || []) {
+      if (!c.id || c.id === mafiaBot.id) continue;
+      const p = getPlayerById(room, c.id);
+      if (!p || !p.alive || isMafiaTeam(p.role)) continue;
+      if (getMafiaKillBlockedCount(room, c.id) >= MAFIA_KILL_STALE_FAILS) continue;
+      scores[c.id] = (scores[c.id] || 0) + 4;
+    }
+  }
+}
+
 function pickBotKillTarget(room, mafiaBot) {
   const scores = buildSuspicionScores(room, mafiaBot);
   const firstNight = room.game && room.game.nightIndex <= 1;
@@ -2676,6 +2743,20 @@ function pickBotKillTarget(room, mafiaBot) {
       if (p.role === ROLE.PRIVATE_DETECTIVE) bonus = 3;
       scores[p.id] = (scores[p.id] || 0) + bonus;
     }
+  }
+  for (const p of getPublicPoliceClaimTargets(room, mafiaBot.id)) {
+    scores[p.id] = (scores[p.id] || 0) + 4;
+  }
+  for (const r of m42Bluff.scanPoliceReporters(room, voteFactHelpers)) {
+    if (r.id === mafiaBot.id) continue;
+    const p = getPlayerById(room, r.id);
+    if (p && p.alive && !isMafiaTeam(p.role)) {
+      scores[p.id] = (scores[p.id] || 0) + 3;
+    }
+  }
+  applyMafiaKillStalePenalties(room, scores);
+  if (getAlivePlayers(room).some((p) => getMafiaKillBlockedCount(room, p.id) >= MAFIA_KILL_STALE_FAILS)) {
+    boostMafiaKillAlternateRoleClaims(room, mafiaBot, scores);
   }
   return pickWeightedFromScores(scores, [mafiaBot.id]) || pickRandomTarget(room, mafiaBot, { excludeMafiaTeam: true });
 }
@@ -4342,6 +4423,7 @@ function initGameState(room) {
     botFakePoliceHistory: {},
     publicVoteIntel: [],
     publicPoliceClaimIds: {},
+    mafiaKillBlockedCounts: {},
     cultProselytizedIds: [],
     mafiaPoliceBluffBurnt: false,
     pendingClericRevive: null
@@ -6077,6 +6159,12 @@ function resolveNight(room) {
               : '[상황] 마피아가 지목한 대상이 사망한 경우'
           });
           broadcastAnimation(room, 'anim-mafia-kill');
+        }
+      }
+      if (killTarget) {
+        const kt = getPlayerById(room, killTarget);
+        if (kt && kt.alive && !deaths.includes(killTarget)) {
+          recordMafiaKillSurvived(room, killTarget);
         }
       }
     }

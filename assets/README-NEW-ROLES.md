@@ -24,18 +24,16 @@
 
 배치 경로: `public/assets/motions/{name}.png`
 
-## 동기화
+## 동기화 (필수)
 
-프로젝트 루트 또는 `assets/` 에 PNG가 있으면:
-
-```bash
-npm run prepare-assets
-```
-
-또는
+PNG 원본 위치: `assets/cleric.png` 등 (프로젝트 루트 `assets/`)
 
 ```bash
-node scripts/sync-generated-pngs.js
+npm run install-new-roles
+npm start
 ```
+
+서버 콘솔에 `[ASSETS] terrorist portrait => ...png` 가 나와야 정상입니다.  
+`MISSING (SVG fallback)` 이면 PNG가 없어 갈색 실루엣(SVG)만 보입니다.
 
 캐시 갱신: `public/app.js` `ROLE_PORTRAIT_VERSION`, `public/motions.js` `MOTION_ASSET_VERSION` 이 올라가 있어야 합니다.

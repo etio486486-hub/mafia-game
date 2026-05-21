@@ -6,7 +6,9 @@
     "start": "node server.js",
     "verify:police-ack": "node scripts/verify-police-ack.js",
     "prepare-motions": "node scripts/copy-motion-pngs.js",
-    "prepare-assets": "node scripts/sync-generated-pngs.js && node scripts/copy-motion-pngs.js && node scripts/ensure-cult-assets.js && node scripts/ensure-placeholder-assets.js"
+    "prepare-assets": "node scripts/install-role-assets.js && node scripts/copy-motion-pngs.js && node scripts/ensure-cult-assets.js && node scripts/ensure-placeholder-assets.js",
+    "install-assets": "node scripts/install-role-assets.js",
+    "install-new-roles": "node scripts/install-new-role-pngs.js"
   },
   "dependencies": {
     "express": "^4.21.2",

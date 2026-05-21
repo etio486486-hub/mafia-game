@@ -171,39 +171,102 @@ if (!userID) {
 
 let state = null;
 let selectedTargetId = null;
-let playerNotes = {};
-let notesSessionKey = null;
+/** 방 단위 직업 유추·메모 (localStorage, 새 게임 버튼 전까지 유지) */
+let playerNotesStore = { byId: {}, byNick: {} };
 let memoEditingPlayerId = null;
 let memoSelectedRole = null;
+
 function getNotesStorageKey() {
   if (!state || !state.roomCode) return null;
-  return `mafia_notes_${state.roomCode}_${notesSessionKey || 'default'}`;
+  return `mafia_guess_notes_${state.roomCode}`;
+}
+
+function normalizePlayerNotesStore(raw) {
+  if (!raw || typeof raw !== 'object') return { byId: {}, byNick: {} };
+  if (raw.byId || raw.byNick) {
+    return { byId: { ...(raw.byId || {}) }, byNick: { ...(raw.byNick || {}) } };
+  }
+  const byId = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (v && typeof v === 'object' && (v.guessedRole || v.note)) {
+      byId[String(k)] = {
+        guessedRole: v.guessedRole || null,
+        note: (v.note || '').trim()
+      };
+    }
+  }
+  return { byId, byNick: {} };
+}
+
+function migrateLegacyPlayerNotes(roomCode) {
+  const keysToTry = [];
+  const sessKey = localStorage.getItem(`mafia_notes_session_${roomCode}`);
+  if (sessKey) keysToTry.push(`mafia_notes_${roomCode}_${sessKey}`);
+  keysToTry.push(`mafia_notes_${roomCode}_default`);
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(`mafia_notes_${roomCode}_`) && !keysToTry.includes(k)) {
+      keysToTry.push(k);
+    }
+  }
+  let merged = false;
+  for (const legacyKey of keysToTry) {
+    try {
+      const legacy = JSON.parse(localStorage.getItem(legacyKey) || '{}');
+      const norm = normalizePlayerNotesStore(legacy);
+      if (Object.keys(norm.byId).length) {
+        Object.assign(playerNotesStore.byId, norm.byId);
+        merged = true;
+      }
+      if (Object.keys(norm.byNick).length) {
+        Object.assign(playerNotesStore.byNick, norm.byNick);
+        merged = true;
+      }
+    } catch { /* ignore */ }
+  }
+  return merged;
+}
+
+function findPlayerInState(playerId) {
+  if (!state || !Array.isArray(state.players)) return null;
+  const id = String(playerId);
+  return state.players.find((p) => String(p.id) === id) || null;
 }
 
 function loadPlayerNotes() {
   const key = getNotesStorageKey();
-  if (!key) { playerNotes = {}; return; }
+  if (!key) {
+    playerNotesStore = { byId: {}, byNick: {} };
+    return;
+  }
   try {
-    playerNotes = JSON.parse(localStorage.getItem(key) || '{}');
+    playerNotesStore = normalizePlayerNotesStore(JSON.parse(localStorage.getItem(key) || '{}'));
   } catch {
-    playerNotes = {};
+    playerNotesStore = { byId: {}, byNick: {} };
+  }
+  if (state && state.roomCode && migrateLegacyPlayerNotes(state.roomCode)) {
+    savePlayerNotes();
   }
 }
 
 function savePlayerNotes() {
   const key = getNotesStorageKey();
   if (!key) return;
-  localStorage.setItem(key, JSON.stringify(playerNotes));
+  localStorage.setItem(key, JSON.stringify(playerNotesStore));
 }
 
 function resetPlayerNotesSession() {
-  notesSessionKey = String(Date.now());
-  playerNotes = {};
+  playerNotesStore = { byId: {}, byNick: {} };
   savePlayerNotes();
 }
 
 function getPlayerNote(playerId) {
-  return playerNotes[playerId] || { guessedRole: null, note: '' };
+  const id = String(playerId);
+  if (playerNotesStore.byId[id]) return playerNotesStore.byId[id];
+  const player = findPlayerInState(playerId);
+  const nick = player && player.nickname;
+  if (nick && playerNotesStore.byNick[nick]) return playerNotesStore.byNick[nick];
+  return { guessedRole: null, note: '' };
 }
 
 function setPlayerNote(playerId, data) {
@@ -211,10 +274,15 @@ function setPlayerNote(playerId, data) {
     guessedRole: data.guessedRole || null,
     note: (data.note || '').trim()
   };
+  const id = String(playerId);
+  const player = findPlayerInState(playerId);
+  const nick = player && player.nickname;
   if (!next.guessedRole && !next.note) {
-    delete playerNotes[playerId];
+    delete playerNotesStore.byId[id];
+    if (nick) delete playerNotesStore.byNick[nick];
   } else {
-    playerNotes[playerId] = next;
+    playerNotesStore.byId[id] = next;
+    if (nick) playerNotesStore.byNick[nick] = next;
   }
   savePlayerNotes();
 }
@@ -810,7 +878,7 @@ function renderLobbyChat() {
   forceLobbyScrollBottom = false;
 }
 
-const ROLE_PORTRAIT_VERSION = '7';
+const ROLE_PORTRAIT_VERSION = '9';
 const UI_ASSET_VERSION = '6';
 const PHASE_ILLUSTRATION_COUNT = 5;
 
@@ -854,7 +922,7 @@ function buildPlayerAvatarInner(playerId) {
   if (isSelf && state.myRole) return buildRolePortraitHtml(state.myRole);
 
   const note = getPlayerNote(playerId);
-  const p = state && state.players && state.players.find((pl) => pl.id === playerId);
+  const p = findPlayerInState(playerId);
 
   if (!p) {
     if (note.guessedRole) {
@@ -863,10 +931,8 @@ function buildPlayerAvatarInner(playerId) {
       const initial = (ROLE_GUIDE[guessed] && ROLE_GUIDE[guessed].name.slice(0, 1)) || '?';
       return `<img src="${rolePortraitUrl(guessed)}" alt="${escapeHtml(label)}" loading="lazy" onerror="${rolePortraitImgOnerror(initial, guessed)}">`;
     }
-    const pid = Number(playerId);
-    const safeId = Number.isFinite(pid) ? String(pid) : '';
-    if (!safeId) return '<span class="role-portrait-fallback">?</span>';
-    return '<button type="button" class="chat-avatar-guess-btn" data-guess-id="' + safeId + '" aria-label="직업 유추">' +
+    const safeId = String(playerId);
+    return '<button type="button" class="chat-avatar-guess-btn" data-guess-id="' + escapeHtml(safeId) + '" aria-label="직업 유추">' +
       '<span class="role-portrait-fallback">?</span></button>';
   }
 
@@ -904,10 +970,8 @@ function buildPlayerAvatarInner(playerId) {
     return `<img src="${rolePortraitUrl(guessed)}" alt="${escapeHtml(label)}" loading="lazy" onerror="${rolePortraitImgOnerror(initial, guessed)}">`;
   }
 
-  const pid = Number(playerId);
-  const safeId = Number.isFinite(pid) ? String(pid) : '';
-  if (!safeId) return '<span class="role-portrait-fallback">?</span>';
-  return '<button type="button" class="chat-avatar-guess-btn" data-guess-id="' + safeId + '" aria-label="직업 유추">' +
+  const safeId = String(playerId);
+  return '<button type="button" class="chat-avatar-guess-btn" data-guess-id="' + escapeHtml(safeId) + '" aria-label="직업 유추">' +
     '<span class="role-portrait-fallback">?</span></button>';
 }
 
@@ -1482,15 +1546,16 @@ function renderPlayerGrid() {
       || isCultFollower
     );
     const hideDeadPrivateGuess = isDead && !deadHasPublicRoleHint;
-    const showGuessedPortrait = !!(note.guessedRole && !hideDeadPrivateGuess);
-    const visibleGuessedLabel = showGuessedPortrait ? guessedLabel : '';
+    const hasPrivateGuess = !!note.guessedRole;
+    const showGuessedPortrait = !!(hasPrivateGuess && !hideDeadPrivateGuess);
+    const privateGuessLabel = hasPrivateGuess ? guessedLabel : '';
     let cls = 'player-card';
     if (isDead) cls += ' dead';
     if (state.phase === 'night' && state.myRole === ROLE.MEDIUM && isDead && canSelectPlayerSlot(p)) cls += ' medium-target';
     if (selectedTargetId === p.id) cls += ' selected';
     if (isCandidate) cls += ' candidate';
     if (isSelf) cls += ' is-self';
-    if (showGuessedPortrait || confirmedRole || isMatchedPoliceClaim || isMatchedRoleClaim) cls += ' has-guess';
+    if (showGuessedPortrait || hasPrivateGuess || confirmedRole || isMatchedPoliceClaim || isMatchedRoleClaim) cls += ' has-guess';
     const isPdWatch = state.myRole === ROLE.PRIVATE_DETECTIVE && state.myPrivateDetectiveWatchId === p.id;
     const isPdPointed = state.myRole === ROLE.PRIVATE_DETECTIVE && state.myPrivateDetectivePointedId === p.id;
     if (isTeammate) cls += ' mafia-teammate';
@@ -1531,8 +1596,8 @@ function renderPlayerGrid() {
       guessHtml = `<span class="slot-team-badge role-${p.role}" title="교주팀 신도">${escapeHtml(p.roleLabel || '신도')}</span>`;
     } else if (confirmedLabel) {
       guessHtml = `<button type="button" class="slot-guess-btn is-confirmed role-${confirmedRole}" data-guess-id="${p.id}" title="확정 정보는 유지되며, 개인 직업 유추를 따로 기록할 수 있습니다">${escapeHtml(confirmedLabel)}</button>`;
-    } else if (visibleGuessedLabel) {
-      guessHtml = `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(visibleGuessedLabel)}</button>`;
+    } else if (privateGuessLabel) {
+      guessHtml = `<button type="button" class="slot-guess-btn role-${note.guessedRole}" data-guess-id="${p.id}" title="직업 유추">${escapeHtml(privateGuessLabel)}</button>`;
     } else {
       guessHtml = `<button type="button" class="slot-guess-btn slot-guess-empty" data-guess-id="${p.id}" title="직업 유추">직업 유추</button>`;
     }
@@ -2248,9 +2313,7 @@ socket.on('stateSync', (data) => {
   } else {
     stopKeepAlive();
   }
-  if (data.phase && data.phase !== 'lobby' && data.phase !== 'none') {
-    if (!notesSessionKey) notesSessionKey = localStorage.getItem(`mafia_notes_session_${data.roomCode}`) || String(Date.now());
-    localStorage.setItem(`mafia_notes_session_${data.roomCode}`, notesSessionKey);
+  if (data.roomCode) {
     loadPlayerNotes();
   }
   renderFromState();
@@ -2448,8 +2511,7 @@ socket.on('privateInfo', (data) => {
         state.spyResolved = false;
       }
       if (data.type === 'role') {
-        resetPlayerNotesSession();
-        localStorage.setItem(`mafia_notes_session_${state.roomCode}`, notesSessionKey);
+        loadPlayerNotes();
         showRoleReveal(data.role);
       }
       renderMyRoleSidebar();

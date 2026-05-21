@@ -3,7 +3,7 @@ services:
     name: mafia-game
     runtime: node
     plan: free
-    buildCommand: npm install && npm run prepare-assets
+    buildCommand: npm install && npm run install-new-roles && npm run prepare-assets
     startCommand: npm start
     healthCheckPath: /health
     envVars:

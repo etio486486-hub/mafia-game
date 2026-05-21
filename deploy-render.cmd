@@ -71,7 +71,7 @@ echo     https://dashboard.render.com/
 echo     ^> New + ^> Web Service ^> repo 연결
 echo.
 echo     Build Command:
-echo       npm install ^&^& npm run prepare-assets
+echo       npm install ^&^& npm run install-new-roles ^&^& npm run prepare-assets
 echo.
 echo     Start Command:
 echo       npm start
