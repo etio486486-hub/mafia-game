@@ -6,7 +6,7 @@
     "start": "node server.js",
     "verify:police-ack": "node scripts/verify-police-ack.js",
     "prepare-motions": "node scripts/copy-motion-pngs.js",
-    "prepare-assets": "node scripts/copy-motion-pngs.js && node scripts/ensure-cult-assets.js && node scripts/ensure-placeholder-assets.js"
+    "prepare-assets": "node scripts/sync-generated-pngs.js && node scripts/copy-motion-pngs.js && node scripts/ensure-cult-assets.js && node scripts/ensure-placeholder-assets.js"
   },
   "dependencies": {
     "express": "^4.21.2",

@@ -51,7 +51,8 @@ const ROLE = {
   PRIVATE_DETECTIVE: 'private_detective',
   POLICE: 'police', DOCTOR: 'doctor', SOLDIER: 'soldier',
   POLITICIAN: 'politician', MEDIUM: 'medium', REPORTER: 'reporter',
-  GRAVEROBBER: 'graverobber', CULT_LEADER: 'cult_leader'
+  GRAVEROBBER: 'graverobber', CULT_LEADER: 'cult_leader',
+  CLERIC: 'cleric', TERRORIST: 'terrorist', BEAST_MAN: 'beast_man', CULTIST: 'cultist'
 };
 
 const ROLE_GUIDE = {
@@ -114,6 +115,26 @@ const ROLE_GUIDE = {
     name: '교주', team: '교주 팀',
     desc: '홀수 밤마다 마피아가 아닌 생존자 1명을 포교해 교주팀으로 만듭니다. 마피아·이미 포교된 대상은 불가. 포교 성공 시 종소리가 울립니다.',
     tip: '홀수 밤 1회 포교(성공 시 종소리 즉시) · 마피아 실패 시 다른 대상 재시도 · 교주·신도 낮 2표'
+  },
+  [ROLE.CLERIC]: {
+    name: '성직자', team: '시민 팀',
+    desc: '게임 중 1회, 밤에 사망자 한 명을 지정해 다음 날 낮에 부활시킵니다. 교주 진영은 부활할 수 없습니다.',
+    tip: '밤 → 사망자 선택 → 부활 (1회)'
+  },
+  [ROLE.TERRORIST]: {
+    name: '테러리스트', team: '시민 팀',
+    desc: '찬반 처형 시 생존자 1명을 지정해 함께 사망(자폭)합니다. 마피아에게 살해당하면 공격한 마피아도 함께 사망(산화)합니다.',
+    tip: '최후의 반론 중 동귀어진 지정 · 산화 패시브'
+  },
+  [ROLE.BEAST_MAN]: {
+    name: '짐승인간', team: '마피아 팀',
+    desc: '마피아와 처음엔 서로 모릅니다. 경찰 조사 시 시민으로 보입니다. 마피아 공격 시 접선하며, 마피아 전멸 후 밤에 직접 처형할 수 있습니다.',
+    tip: '접선 패시브 · 마피아 전멸 후 밤 처형'
+  },
+  [ROLE.CULTIST]: {
+    name: '광신도', team: '교주 팀',
+    desc: '게임 시작 시 교주를 압니다. 교주가 자신을 포교하면 즉시 교주팀이 됩니다. 교주 사망 시 교주를 계승합니다.',
+    tip: '교주 정보 확인 · 포교 시 즉시 합류'
   }
 };
 
@@ -268,8 +289,11 @@ function canSelectActionTarget() {
   if (state.phase === 'day_vote') return true;
   if (state.phase === 'night') {
     if (state.myRole === ROLE.MEDIUM) return !state.mediumResolved;
+    if (state.myRole === ROLE.CLERIC) return !state.clericUsed && !state.clericResolved;
+    if (state.myRole === ROLE.BEAST_MAN) return !!state.beastManCanKill;
     return [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER, ROLE.PRIVATE_DETECTIVE].includes(state.myRole);
   }
+  if (state.phase === 'last_words' && state.canPickTerroristMartyr) return true;
   return false;
 }
 
@@ -291,7 +315,16 @@ function canSelectPlayerSlot(p) {
     if (state.myRole === ROLE.PRIVATE_DETECTIVE && state.myPrivateDetectiveWatchId) {
       return false;
     }
+    if (state.myRole === ROLE.CLERIC && !state.clericUsed && !state.clericResolved) {
+      return !p.alive;
+    }
+    if (state.myRole === ROLE.BEAST_MAN && state.beastManCanKill) {
+      return p.alive;
+    }
     return p.alive && [ROLE.MAFIA, ROLE.SPY, ROLE.POLICE, ROLE.DOCTOR, ROLE.REPORTER, ROLE.CULT_LEADER, ROLE.PRIVATE_DETECTIVE].includes(state.myRole);
+  }
+  if (state.phase === 'last_words' && state.canPickTerroristMartyr) {
+    return p.alive && p.id !== state.myPlayerId;
   }
   return false;
 }
@@ -777,7 +810,7 @@ function renderLobbyChat() {
   forceLobbyScrollBottom = false;
 }
 
-const ROLE_PORTRAIT_VERSION = '6';
+const ROLE_PORTRAIT_VERSION = '7';
 const UI_ASSET_VERSION = '6';
 const PHASE_ILLUSTRATION_COUNT = 5;
 
@@ -1521,7 +1554,7 @@ function renderPlayerGrid() {
     const claimMark = isMatchedPoliceClaim
       ? '<span class="slot-claim-mark is-matched-police" title="맞경(경찰 주장 충돌): 아직 확정되지 않았습니다">맞경</span>'
       : (isMatchedRoleClaim
-        ? `<span class="slot-claim-mark is-matched-role" title="맞직업(직업 주장 충돌): 아직 확정되지 않았습니다">맞직업</span>`
+        ? `<span class="slot-claim-mark is-matched-role" title="맞직업(직업 주장 충돌): 아직 확정되지 않았습니다">${matchedClaimRole === 'medium' ? '맞영' : matchedClaimRole === 'reporter' ? '맞기' : '맞직업'}</span>`
         : '');
 
     return `<div class="${cls}" data-id="${p.id}">` +
@@ -1563,6 +1596,24 @@ function renderPlayerGrid() {
   grid.querySelectorAll('.slot-target-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
+      // #region agent log
+      if (document.documentElement.classList.contains('is-mobile')) {
+        const r = btn.getBoundingClientRect();
+        fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+          body: JSON.stringify({
+            sessionId: 'a38a8e',
+            hypothesisId: 'H_touch',
+            location: 'app.js:slot-target-btn',
+            message: 'mobile vote target tap',
+            runId: 'mobile-fix',
+            data: { w: Math.round(r.width), h: Math.round(r.height), targetId: btn.dataset.targetId },
+            timestamp: Date.now()
+          })
+        }).catch(() => {});
+      }
+      // #endregion
       onPlayerCardClick(btn.dataset.targetId);
     });
   });
@@ -1684,8 +1735,29 @@ function renderActionPanel() {
     if (state.joinedCult && state.myRole !== ROLE.CULT_LEADER) {
       hint.textContent = '교주팀입니다. 교주팀 탭에서 교주의 지시를 확인하세요.';
     }
-    if (state.myRole === ROLE.CITIZEN || state.myRole === ROLE.SOLDIER || state.myRole === ROLE.POLITICIAN || state.myRole === ROLE.GRAVEROBBER) {
-      hint.textContent = '이 밤에는 사용할 능력이 없습니다.';
+    if (state.myRole === ROLE.CLERIC && !state.clericUsed && !state.clericResolved) {
+      addConfirmBtn(btns, '부활', () => emitNightAction('clericRevive'));
+      hint.textContent = '사망자 1명을 선택한 뒤 「부활」— 다음 날 낮에 부활합니다. (1회, 교주 진영 불가)';
+    }
+    if (state.myRole === ROLE.CLERIC && (state.clericUsed || state.clericResolved)) {
+      hint.textContent = state.clericUsed ? '부활 능력을 사용했습니다.' : '이번 밤 부활 대상이 확정되었습니다.';
+    }
+    if (state.myRole === ROLE.BEAST_MAN && state.beastManCanKill && state.phase === 'night') {
+      addConfirmBtn(btns, '처형', () => emitNightAction('beastManKill'));
+      hint.textContent = '마피아 전멸 각성: 생존자 1명을 처형할 수 있습니다.';
+    }
+    if (state.myRole === ROLE.BEAST_MAN && !state.beastManCanKill) {
+      hint.textContent = state.beastManContacted
+        ? '마피아와 접선했습니다. 마피아 채팅을 확인하세요.'
+        : '마피아 공격 시 접선합니다. 경찰에게는 시민으로 보입니다.';
+    }
+    if (state.myRole === ROLE.CULTIST) {
+      hint.textContent = '교주를 알고 시작합니다. 포교 시 즉시 교주팀이 됩니다.';
+    }
+    if (state.myRole === ROLE.CITIZEN || state.myRole === ROLE.SOLDIER || state.myRole === ROLE.POLITICIAN || state.myRole === ROLE.GRAVEROBBER || state.myRole === ROLE.TERRORIST) {
+      hint.textContent = state.myRole === ROLE.TERRORIST
+        ? '밤 능력 없음. 처형 시 최후의 반론에서 동귀어진 대상을 지정하세요.'
+        : '이 밤에는 사용할 능력이 없습니다.';
     }
   } else if (state.phase === 'day_vote') {
     const weightHint = (state.myDayVoteWeight || 1) > 1 ? ' (정치인 2표)' : '';
@@ -1710,7 +1782,12 @@ function renderActionPanel() {
       hint.textContent = '찬반 투표 팝업에서 선택하세요.';
     }
   } else if (state.phase === 'last_words') {
-    if (state.myPlayerId === state.executionCandidateId) {
+    if (state.canPickTerroristMartyr) {
+      addConfirmBtn(btns, '동귀어진', () => emitNightAction('terroristMartyr'));
+      hint.textContent = state.myTerroristMartyrTarget
+        ? '동귀어진 대상이 지정되었습니다. 최후의 반론을 이어가세요.'
+        : '처형 시 함께 죽을 생존자를 선택한 뒤 「동귀어진」을 누르세요.';
+    } else if (state.myPlayerId === state.executionCandidateId) {
       hint.textContent = '최후의 반론을 진행하세요. (채팅 탭)';
     } else {
       hint.textContent = '최후의 반론을 듣고 있습니다.';
@@ -1760,7 +1837,10 @@ function emitNightAction(event) {
     policeInvestigate: { anim: 'anim-investigate', cardFx: null },
     reporterScoop: { anim: 'anim-reporter-flash', cardFx: null },
     mediumPurify: { anim: 'anim-investigate', cardFx: null },
-    cultProselytize: { anim: null, cardFx: 'fx-target-cult' }
+    cultProselytize: { anim: null, cardFx: 'fx-target-cult' },
+    clericRevive: { anim: 'anim-doctor-heal', cardFx: null },
+    beastManKill: { anim: 'anim-mafia-kill', cardFx: 'fx-target-kill' },
+    terroristMartyr: { anim: 'anim-mafia-kill', cardFx: 'fx-target-kill' }
   };
   const fx = animMap[event];
   if (fx && fx.anim) runAnimation(fx.anim, { targetId: selectedTargetId, cardFx: fx.cardFx });
@@ -2573,12 +2653,35 @@ function updateMobileViewport() {
   const vv = window.visualViewport;
   const h = vv ? vv.height : window.innerHeight;
   root.style.setProperty('--app-vh', `${Math.round(h)}px`);
+  let kb = 0;
   if (vv) {
-    const kb = Math.max(0, window.innerHeight - vv.height - (vv.offsetTop || 0));
+    kb = Math.max(0, window.innerHeight - vv.height - (vv.offsetTop || 0));
     root.style.setProperty('--keyboard-offset', `${Math.round(kb)}px`);
   } else {
     root.style.setProperty('--keyboard-offset', '0px');
   }
+  // #region agent log
+  if (document.documentElement.classList.contains('is-mobile')) {
+    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+      body: JSON.stringify({
+        sessionId: 'a38a8e',
+        hypothesisId: 'H_kb',
+        location: 'app.js:updateMobileViewport',
+        message: 'mobile viewport metrics',
+        runId: 'mobile-fix',
+        data: {
+          appVh: Math.round(h),
+          keyboardOffset: Math.round(kb),
+          innerH: window.innerHeight,
+          orient: screen.orientation?.type || ''
+        },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+  }
+  // #endregion
 }
 
 function setupMobileOptimizations() {
@@ -2617,6 +2720,55 @@ function setupMobileOptimizations() {
       setTimeout(scrollLobbyChatToBottom, 280);
     });
   }
+
+  const onPageVisible = () => {
+    if (document.visibilityState !== 'visible') return;
+    // #region agent log
+    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+      body: JSON.stringify({
+        sessionId: 'a38a8e',
+        hypothesisId: 'H_vis',
+        location: 'app.js:onPageVisible',
+        message: 'page visible resume',
+        runId: 'mobile-fix',
+        data: { connected: socket.connected, reconnectPaused },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+    // #endregion
+    updateMobileViewport();
+    if (!reconnectPaused && !socket.connected) {
+      socket.connect();
+    } else if (!reconnectPaused && socket.connected) {
+      requestSessionSync();
+    }
+  };
+  document.addEventListener('visibilitychange', onPageVisible);
+  window.addEventListener('pageshow', (ev) => {
+    if (ev.persisted) onPageVisible();
+  });
+
+  // #region agent log
+  fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+    body: JSON.stringify({
+      sessionId: 'a38a8e',
+      hypothesisId: 'H_init',
+      location: 'app.js:setupMobileOptimizations',
+      message: 'mobile setup complete',
+      runId: 'mobile-fix',
+      data: {
+        isMobile: document.documentElement.classList.contains('is-mobile'),
+        isIos: document.documentElement.classList.contains('is-ios'),
+        hasVisualViewport: !!window.visualViewport
+      },
+      timestamp: Date.now()
+    })
+  }).catch(() => {});
+  // #endregion
 }
 
 setupMobileOptimizations();

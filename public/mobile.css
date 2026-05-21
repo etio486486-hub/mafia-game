@@ -242,11 +242,24 @@ body:has(#waiting-screen.active) #app {
   }
 
   .m42-side-left .m42-role-stage,
-  .m42-side-left .m42-tip-box,
-  .m42-side-left .m42-fold,
   .m42-side-left .announcements,
   .m42-side-left .private-info {
     display: none !important;
+  }
+
+  .m42-side-left .m42-tip-box,
+  .m42-side-left .m42-fold {
+    display: block !important;
+    max-height: 28vh;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    font-size: 0.78rem;
+  }
+
+  .m42-side-left .m42-fold > summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
   }
 
   .m42-side-left .m42-skill-panel,
@@ -386,15 +399,21 @@ body:has(#waiting-screen.active) #app {
   }
 
   .m42-player-grid .slot-target-btn {
-    min-width: 28px;
-    min-height: 28px;
-    font-size: 0.9rem;
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 1rem;
+    padding: 6px;
   }
 
   .m42-player-grid .slot-guess-btn {
-    font-size: 0.58rem;
-    padding: 2px 4px;
-    min-height: 22px;
+    font-size: 0.62rem;
+    padding: 6px 8px;
+    min-height: 36px;
+    min-width: 36px;
+  }
+
+  html.is-mobile .m42-player-grid .player-card .slot-key {
+    display: none;
   }
 
   .skill-notice {
@@ -417,6 +436,18 @@ body:has(#waiting-screen.active) #app {
 
   .execution-vote-panel .btn-large {
     min-height: 52px;
+  }
+
+  .reconnect-banner {
+    top: 0;
+    padding-top: max(10px, var(--safe-top));
+    padding-left: max(8px, var(--safe-left));
+    padding-right: max(8px, var(--safe-right));
+  }
+
+  body:has(#game-screen.active) .toast {
+    bottom: calc(72px + var(--safe-bottom) + var(--keyboard-offset, 0px));
+    z-index: 210;
   }
 }
 
@@ -483,6 +514,22 @@ html.is-ios .m42-game-shell .m42-center {
   .m42-player-grid {
     grid-template-columns: 1fr;
     max-height: 100%;
+  }
+
+  .m42-game-shell .m42-chat-input.chat-input-row {
+    position: sticky;
+    bottom: 0;
+    left: auto;
+    right: auto;
+    box-shadow: none;
+  }
+
+  .m42-game-shell .m42-center {
+    padding-bottom: 8px;
+  }
+
+  .m42-side-right {
+    margin-bottom: 0;
   }
 }
 

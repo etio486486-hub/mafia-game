@@ -1,11 +1,13 @@
 /* Game motion / cutscene system (Mafia42-style) */
-const MOTION_ASSET_VERSION = '8';
+const MOTION_ASSET_VERSION = '9';
 
 const MOTION_TYPES = [
   'vote_execution', 'vote_rejected', 'vote_tie', 'quiet_night', 'mafia_kill',
   'doctor_heal', 'soldier_block', 'police_mafia', 'police_innocent',
   'spy_contact', 'spy_investigate', 'madam_silence', 'politician_immunity',
-  'reporter_scoop', 'graverobber_inherit', 'cult_proselytize', 'private_detective_search'
+  'reporter_scoop', 'graverobber_inherit', 'cult_proselytize', 'private_detective_search',
+  'cleric_revive', 'terrorist_martyr', 'terrorist_oxidation',
+  'beastman_kill', 'beastman_contact', 'cultist_succession'
 ];
 
 function motionTypeKey(type) {

@@ -18,7 +18,11 @@ const ROLES = [
   { id: 'medium', label: '영매', color: '#4a3a6e' },
   { id: 'reporter', label: '기자', color: '#2d6b7a' },
   { id: 'graverobber', label: '도굴꾼', color: '#3d3d2a' },
-  { id: 'cult_leader', label: '교주', color: '#4a2c6e' }
+  { id: 'cult_leader', label: '교주', color: '#4a2c6e' },
+  { id: 'cleric', label: '성직자', color: '#6b5a2a' },
+  { id: 'terrorist', label: '테러리스트', color: '#8b3a1a' },
+  { id: 'beast_man', label: '짐승인간', color: '#3a4a2a' },
+  { id: 'cultist', label: '광신도', color: '#5a3a6e' }
 ];
 
 const MOTIONS = [
@@ -35,7 +39,13 @@ const MOTIONS = [
   { file: 'politician_immunity', label: '면역' },
   { file: 'reporter_scoop', label: '취재' },
   { file: 'graverobber_inherit', label: '계승' },
-  { file: 'private_detective_search', label: '사탐 관찰' }
+  { file: 'private_detective_search', label: '사탐 관찰' },
+  { file: 'cleric_revive', label: '성직자 부활' },
+  { file: 'terrorist_martyr', label: '테러 자폭' },
+  { file: 'terrorist_oxidation', label: '테러 산화' },
+  { file: 'beastman_kill', label: '짐승 처형' },
+  { file: 'beastman_contact', label: '짐승 접선' },
+  { file: 'cultist_succession', label: '광신도 계승' }
 ];
 
 function roleSvg(role) {
