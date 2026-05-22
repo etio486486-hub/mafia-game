@@ -114,3 +114,7 @@ function showGameMotion(data) {
     setTimeout(done, data.duration || 4200);
   });
 }
+
+window.enqueueMotion = enqueueMotion;
+window.clearMotionQueue = clearMotionQueue;
+window.showGameMotion = showGameMotion;

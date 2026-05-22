@@ -1,12 +1,15 @@
 /* ─── AudioManager (사운드 뼈대) ─────────────────────────────────────────── */
 
+/** public/sounds/*.mp3 배치 후 true 로 바꾸거나 localStorage mafia_sounds=1 */
+const SOUNDS_ENABLED = localStorage.getItem('mafia_sounds') === '1';
+
 const AudioManager = {
   muted: localStorage.getItem('mafia_muted') === 'true',
   bgm: null,
   cache: {},
 
   playBGM(name) {
-    if (this.muted) return;
+    if (!SOUNDS_ENABLED || this.muted) return;
     try {
       if (this.bgm) { this.bgm.pause(); this.bgm = null; }
       this.bgm = new Audio(`/sounds/${name}.mp3`);
@@ -17,7 +20,7 @@ const AudioManager = {
   },
 
   playSFX(name) {
-    if (this.muted) return;
+    if (!SOUNDS_ENABLED || this.muted) return;
     try {
       if (!this.cache[name]) this.cache[name] = new Audio(`/sounds/${name}.mp3`);
       const sfx = this.cache[name].cloneNode();
@@ -113,13 +116,13 @@ const ROLE_GUIDE = {
   },
   [ROLE.CULT_LEADER]: {
     name: '교주', team: '교주 팀',
-    desc: '홀수 밤마다 마피아가 아닌 생존자 1명을 포교해 교주팀으로 만듭니다. 마피아·이미 포교된 대상은 불가. 포교 성공 시 종소리가 울립니다.',
+    desc: '홀수 밤마다 마피아·성직자가 아닌 생존자 1명을 포교합니다. 성직자에게는 실패하며 정체가 들킬 수 있습니다. 포교 성공 시 종소리가 울립니다.',
     tip: '홀수 밤 1회 포교(성공 시 종소리 즉시) · 마피아 실패 시 다른 대상 재시도 · 교주·신도 낮 2표'
   },
   [ROLE.CLERIC]: {
     name: '성직자', team: '시민 팀',
-    desc: '게임 중 1회, 밤에 사망자 한 명을 지정해 다음 날 낮에 부활시킵니다. 교주 진영은 부활할 수 없습니다.',
-    tip: '밤 → 사망자 선택 → 부활 (1회)'
+    desc: '게임 중 1회 사망자 부활. 교주 포교 시도 시 포교가 실패하고 교주 정체를 압니다. 낮 토론에서 교주를 공표하세요.',
+    tip: '밤 부활(1회) · 교주 포교 저지 → 낮에 교주 공표'
   },
   [ROLE.TERRORIST]: {
     name: '테러리스트', team: '시민 팀',
@@ -329,6 +332,7 @@ function openPlayerRolePicker(playerId) {
   });
 
   overlay.hidden = false;
+  overlay.setAttribute('aria-hidden', 'false');
 }
 
 function openPlayerMemo(playerId) {
@@ -337,7 +341,10 @@ function openPlayerMemo(playerId) {
 
 function closePlayerMemo() {
   const overlay = $('#player-memo-overlay');
-  if (overlay) overlay.hidden = true;
+  if (overlay) {
+    overlay.hidden = true;
+    overlay.setAttribute('aria-hidden', 'true');
+  }
   memoEditingPlayerId = null;
 }
 
@@ -363,6 +370,52 @@ function canSelectActionTarget() {
   }
   if (state.phase === 'last_words' && state.canPickTerroristMartyr) return true;
   return false;
+}
+
+/** lib/m42-cult.js canProselytizeTonight — phaseChanged 직후 stateSync 전 UI용 */
+function canCultProselytizeTonightClient(state) {
+  if (!state || state.phase !== 'night') return false;
+  if (state.myRole !== ROLE.CULT_LEADER) return false;
+  const n = state.nightIndex || 0;
+  if (n <= 0 || n % 2 !== 1) return false;
+  if (state.cultProselytizedSuccess || state.cultResolved) return false;
+  return true;
+}
+
+function viewerOnCultSideClient() {
+  return !!(state && (state.joinedCult || state.myRole === ROLE.CULT_LEADER));
+}
+
+/** 교주팀 시청자용: 초상화 덮개 대신 slot-avatar 배경·테두리 클래스 */
+function getCultAvatarClassModifier(p, isSelf) {
+  if (!viewerOnCultSideClient()) return '';
+  const isLeaderCard = (isSelf && state.myRole === ROLE.CULT_LEADER) || !!(p && p.isCultLeaderAlly);
+  const isProselyteCard = (isSelf && state.joinedCult && state.myRole !== ROLE.CULT_LEADER)
+    || (!!p && p.isCultFollower && !p.isCultLeaderAlly);
+  const isMarkedProselyte = !!(
+    p
+    && (
+      (Array.isArray(state.cultMemberIds) && state.cultMemberIds.includes(p.id))
+      || (Array.isArray(state.cultProselytizedIds) && state.cultProselytizedIds.includes(p.id))
+    )
+    && !p.isCultLeaderAlly
+  );
+  if (isLeaderCard) return ' cult-avatar-leader';
+  if (isProselyteCard || isMarkedProselyte) return ' cult-avatar-proselyte';
+  return '';
+}
+
+function buildCultAvatarOverlay(_p, _isSelf) {
+  return '';
+}
+
+function flashCultProselytizeCard(playerId) {
+  flashPlayerCard(playerId, 'fx-target-cult');
+  const card = document.querySelector(`.player-card[data-id="${playerId}"]`);
+  if (card) {
+    card.classList.add('cult-proselytized-flash');
+    setTimeout(() => card.classList.remove('cult-proselytized-flash'), 2400);
+  }
 }
 
 function canSelectPlayerSlot(p) {
@@ -400,24 +453,32 @@ function canSelectPlayerSlot(p) {
 let activeChatChannel = 'day';
 const chatStore = { lobby: [], day: [], mafia: [], cult: [], dead: [], lastWords: [] };
 let timerInterval = null;
+let phaseTickNudgeAt = 0;
 let phaseEndEstimate = 0;
 let forceChatScrollBottom = false;
 let forceLobbyScrollBottom = false;
 
-const socket = io({
-  reconnection: true,
-  reconnectionDelay: 1000,
-  reconnectionDelayMax: 8000,
-  reconnectionAttempts: Infinity,
-  randomizationFactor: 0.35,
-  transports: ['polling', 'websocket'],
-  timeout: 30000
-});
+const socket = typeof window.io === 'function'
+  ? window.io({
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 8000,
+    reconnectionAttempts: Infinity,
+    randomizationFactor: 0.35,
+    transports: ['polling', 'websocket'],
+    timeout: 30000
+  })
+  : (() => {
+    console.error('[mafia] socket.io client not loaded — check /socket.io/socket.io.js');
+    const noop = () => {};
+    return { connected: false, on: noop, off: noop, emit: noop, connect: noop };
+  })();
 let socketConnected = false;
+let serverHttpOk = false;
 let reconnectPaused = false;
 let pendingRoomRejoin = null;
 let rejoinAttempts = 0;
-const MAX_REJOIN_ATTEMPTS = 1;
+const MAX_REJOIN_ATTEMPTS = 3;
 let keepAliveTimer = null;
 let disconnectBannerTimer = null;
 let chatRenderTimer = null;
@@ -503,17 +564,46 @@ function getNickname() {
   return ($('#nickname').value || '').trim();
 }
 
+async function probeServerHealth() {
+  try {
+    const res = await fetch('/health', { cache: 'no-store' });
+    serverHttpOk = res.ok;
+  } catch (_) {
+    serverHttpOk = false;
+  }
+  updateLobbyConnectionUi();
+}
+
+function syncSocketConnectedFromClient() {
+  if (reconnectPaused) return;
+  const live = !!socket.connected;
+  if (live !== socketConnected) {
+    socketConnected = live;
+    updateLobbyConnectionUi();
+  }
+}
+
 function updateLobbyConnectionUi() {
   const statusEl = $('#connection-status');
   const createBtn = $('#btn-create');
   const joinBtn = $('#btn-join');
   if (statusEl) {
-    statusEl.textContent = socketConnected ? '서버 연결됨' : '서버 연결 중...';
+    let label = '서버 연결 중...';
+    if (socketConnected) label = '서버 연결됨';
+    else if (!serverHttpOk) label = '서버에 연결할 수 없습니다. node server.js 실행 후 F5';
+    else label = '실시간 연결 중... 잠시 후 F5로 새로고침';
+    statusEl.textContent = label;
     statusEl.classList.toggle('is-connected', socketConnected);
     statusEl.classList.toggle('is-connecting', !socketConnected);
   }
-  if (createBtn) createBtn.disabled = false;
-  if (joinBtn) joinBtn.disabled = false;
+  if (createBtn) createBtn.disabled = !socketConnected;
+  if (joinBtn) joinBtn.disabled = !socketConnected;
+}
+
+function startConnectionWatchers() {
+  probeServerHealth();
+  setInterval(probeServerHealth, 8000);
+  setInterval(syncSocketConnectedFromClient, 1500);
 }
 
 function leaveRoom() {
@@ -609,9 +699,24 @@ function setPhaseTheme(phase) {
 function startLocalTimer(remainingMs) {
   clearInterval(timerInterval);
   phaseEndEstimate = Date.now() + remainingMs;
+  phaseTickNudgeAt = 0;
   const tick = () => {
     const left = phaseEndEstimate - Date.now();
     $('#timer-label').textContent = formatTime(left);
+    if (
+      left <= -2000
+      && state
+      && state.phase
+      && state.phase !== 'lobby'
+      && state.phase !== 'game_over'
+      && socketConnected
+    ) {
+      const now = Date.now();
+      if (!phaseTickNudgeAt || now - phaseTickNudgeAt > 3500) {
+        phaseTickNudgeAt = now;
+        socket.emit('requestPhaseTick');
+      }
+    }
   };
   tick();
   timerInterval = setInterval(tick, 500);
@@ -714,6 +819,15 @@ function renderFromState() {
   if (state.phase === 'none' || !state.roomCode) {
     showScreen('lobby');
     if (state.serverInfo) renderServerInfo(state.serverInfo);
+    const savedCode = localStorage.getItem('mafia_roomCode');
+    const wasInGame = sessionStorage.getItem('mafia_in_room_session');
+    if (savedCode && wasInGame && socketConnected) {
+      showToast(`진행 중이던 방 ${savedCode}에 다시 붙습니다. 잠시만 기다려 주세요.`);
+      pendingRoomRejoin = savedCode;
+      rejoinAttempts = 0;
+      const nick = getNickname() || localStorage.getItem('mafia_nickname') || '플레이어';
+      socket.emit('join', { userID, nickname: nick, roomCode: savedCode, autoReconnect: true });
+    }
     return;
   }
 
@@ -915,9 +1029,42 @@ function getPlayerSlotIndex(playerId) {
   return idx >= 0 ? idx + 1 : '?';
 }
 
+/** 투표·최후변론 등 페이즈 전환 시 서버가 비운 확직·맞직·팀 힌트를 이전 값으로 보존 */
+/** 서버 mafiaTeamRoster / privateInfo 팀 목록 → 플레이어 슬롯 빨간 테두리·팀 배지 */
+function applyMafiaTeamRoster(roster) {
+  if (!state?.players?.length || !roster?.length) return;
+  for (const t of roster) {
+    const p = state.players.find((pl) => pl.id === t.id);
+    if (!p) continue;
+    p.isMafiaTeammate = true;
+    if (t.role) p.role = t.role;
+    if (t.roleLabel) p.roleLabel = t.roleLabel;
+  }
+}
+
+function mergePlayerVisualHints(prevPlayers, nextPlayers) {
+  if (!prevPlayers?.length || !nextPlayers?.length) return nextPlayers;
+  const prevById = Object.fromEntries(prevPlayers.map((p) => [p.id, p]));
+  return nextPlayers.map((p) => {
+    const old = prevById[p.id];
+    if (!old) return p;
+    return {
+      ...p,
+      publicConfirmedRole: p.publicConfirmedRole || old.publicConfirmedRole,
+      matchedClaimRole: p.matchedClaimRole ?? null,
+      isMatchedPoliceClaim: !!p.isMatchedPoliceClaim,
+      isMafiaTeammate: p.isMafiaTeammate ?? old.isMafiaTeammate,
+      isCultFollower: p.isCultFollower ?? old.isCultFollower,
+      role: p.role || old.role,
+      roleLabel: p.roleLabel || old.roleLabel
+    };
+  });
+}
+
 /** 채팅·투표 등: renderPlayerGrid와 동일 규칙으로 직업 초상(공개·맞경·유추·사망 숨김) */
 function buildPlayerAvatarInner(playerId) {
-  const myId = state && state.myPlayerId;
+  if (!state || !Array.isArray(state.players)) return '?';
+  const myId = state.myPlayerId;
   const isSelf = playerId === myId;
   if (isSelf && state.myRole) return buildRolePortraitHtml(state.myRole);
 
@@ -940,8 +1087,9 @@ function buildPlayerAvatarInner(playerId) {
     p.publicConfirmedRole && ROLE_GUIDE[p.publicConfirmedRole] ? p.publicConfirmedRole : null;
   const matchedClaimRole =
     p.matchedClaimRole && ROLE_GUIDE[p.matchedClaimRole] ? p.matchedClaimRole : null;
-  const isMatchedPoliceClaim = !!p.isMatchedPoliceClaim && !confirmedRole;
-  const isMatchedRoleClaim = !!matchedClaimRole && !confirmedRole;
+  const showMatBadges = !!state.showMatchedClaimBadges;
+  const isMatchedPoliceClaim = showMatBadges && !!p.isMatchedPoliceClaim && !confirmedRole;
+  const isMatchedRoleClaim = showMatBadges && !!matchedClaimRole && !confirmedRole;
   const isTeammate = !isSelf && p.isMafiaTeammate;
   const isCultFollower = !isSelf && p.isCultFollower;
   const isDead = !p.alive;
@@ -962,7 +1110,9 @@ function buildPlayerAvatarInner(playerId) {
   else if (isMatchedRoleClaim) roleForAvatar = matchedClaimRole;
   else if (isMatchedPoliceClaim) roleForAvatar = ROLE.POLICE;
 
-  if (roleForAvatar) return buildRolePortraitHtml(roleForAvatar);
+  if (roleForAvatar) {
+    return buildRolePortraitHtml(roleForAvatar);
+  }
   if (showGuessedPortrait) {
     const guessed = note.guessedRole;
     const label = formatGuessedRoleLabel(guessed);
@@ -988,36 +1138,8 @@ function showVoteTimeOverlay() {
   if (!overlay || !img) return;
   delete img.dataset.fallback;
   const voteUrl = uiAssetUrl('vote_time.svg');
-  // #region agent log
-  fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-    body: JSON.stringify({
-      sessionId: 'a38a8e',
-      hypothesisId: 'ImgVote',
-      location: 'public/app.js:showVoteTimeOverlay',
-      message: 'vote overlay',
-      data: { voteUrl },
-      timestamp: Date.now()
-    })
-  }).catch(() => {});
-  // #endregion
   img.decoding = 'async';
   img.onerror = () => {
-    // #region agent log
-    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-      body: JSON.stringify({
-        sessionId: 'a38a8e',
-        hypothesisId: 'ImgVoteErr',
-        location: 'public/app.js:showVoteTimeOverlay:onerror',
-        message: 'vote img error',
-        data: { src: String(img.src || '').slice(-120), hadFb: !!img.dataset.fallback },
-        timestamp: Date.now()
-      })
-    }).catch(() => {});
-    // #endregion
     if (!img.dataset.fallback) {
       img.dataset.fallback = '1';
       img.src = voteUrl;
@@ -1296,54 +1418,14 @@ function showPhaseTransition(kind, title, caption, index = 1) {
   let chainStep = 0;
   delete img.dataset.fallback;
   img.decoding = 'async';
-  img.onload = () => {
-    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-      body: JSON.stringify({
-        sessionId: 'a38a8e',
-        hypothesisId: 'ImgPhaseOk',
-        location: 'public/app.js:showPhaseTransition:onload',
-        message: 'phase img loaded',
-        data: { kind, index, src: String(img.src || '').slice(-80) },
-        timestamp: Date.now()
-      })
-    }).catch(() => {});
-  };
   img.onerror = () => {
     chainStep += 1;
-    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-      body: JSON.stringify({
-        sessionId: 'a38a8e',
-        hypothesisId: 'ImgPhaseErr',
-        location: 'public/app.js:showPhaseTransition:onerror',
-        message: 'phase img error step',
-        data: { kind, chainStep, next: srcChain[chainStep] || null },
-        timestamp: Date.now()
-      })
-    }).catch(() => {});
     if (chainStep < srcChain.length) {
       img.src = srcChain[chainStep];
       return;
     }
     img.alt = title;
   };
-  // #region agent log
-  fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-    body: JSON.stringify({
-      sessionId: 'a38a8e',
-      hypothesisId: 'ImgPhase',
-      location: 'public/app.js:showPhaseTransition',
-      message: 'phase transition show',
-      data: { kind, index, srcChain0: srcChain[0] },
-      timestamp: Date.now()
-    })
-  }).catch(() => {});
-  // #endregion
   img.src = srcChain[0];
   titleEl.textContent = title;
   captionEl.textContent = caption;
@@ -1393,6 +1475,11 @@ function showRoleReveal(role) {
   }
   desc.textContent = descText;
   overlay.hidden = false;
+  overlay.setAttribute('aria-hidden', 'false');
+  requestAnimationFrame(() => {
+    const btn = $('#btn-role-reveal-close');
+    if (btn) btn.focus();
+  });
 }
 
 function formatMafiaTeammateList(teammates) {
@@ -1404,21 +1491,36 @@ function showMafiaTeamNotice(teammates) {
   if (!state) return;
   const onMafiaSide = state.myRole === ROLE.MAFIA || state.joinedMafiaChat;
   if (!onMafiaSide) return;
-  const list = teammates
+  if (teammates?.length) applyMafiaTeamRoster(teammates);
+  const list = teammates?.length
     ? formatMafiaTeammateList(teammates)
     : formatMafiaTeammateList(
-      state.players.filter(p => p.isMafiaTeammate).map(p => ({ nickname: p.nickname, roleLabel: p.roleLabel }))
+      state.players.filter((p) => p.isMafiaTeammate).map((p) => ({
+        nickname: p.nickname,
+        roleLabel: p.roleLabel
+      }))
     );
+  const count = state.mafiaTeamCount != null
+    ? state.mafiaTeamCount
+    : state.players.filter((p) => p.isMafiaTeammate).length;
   setTimeout(() => {
-    showToast(list
-      ? `마피아 팀 동료: ${list}`
-      : '마피아 팀: 현재 본인만입니다. (다른 마피아가 없을 수 있음)');
+    if (list) {
+      showToast(`마피아 팀 동료 ${count}명: ${list} (목록 빨간 테두리)`);
+    } else if (state.myRole === ROLE.MAFIA) {
+      showToast('마피아 팀 동료가 표시되지 않았습니다. 새로고침(F5) 후 같은 방에 다시 참가해 보세요.');
+    } else {
+      showToast('마피아 팀에 합류했습니다. 동료는 밤에 공개될 수 있습니다.');
+    }
   }, 900);
 }
 
 function closeRoleReveal() {
   const overlay = $('#role-reveal-overlay');
-  if (overlay) overlay.hidden = true;
+  if (!overlay) return;
+  const active = document.activeElement;
+  if (active && overlay.contains(active)) active.blur();
+  overlay.hidden = true;
+  overlay.setAttribute('aria-hidden', 'true');
 }
 
 function showReporterReveal(data) {
@@ -1521,6 +1623,7 @@ function renderRoleGuide() {
 
 function renderPlayerGrid() {
   const grid = $('#player-grid');
+  if (!grid || !state || !Array.isArray(state.players)) return;
   const myId = state.myPlayerId;
   grid.innerHTML = state.players.map((p, i) => {
     const isSelf = p.id === myId;
@@ -1532,11 +1635,17 @@ function renderPlayerGrid() {
       p.publicConfirmedRole && ROLE_GUIDE[p.publicConfirmedRole] ? p.publicConfirmedRole : null;
     const matchedClaimRole =
       p.matchedClaimRole && ROLE_GUIDE[p.matchedClaimRole] ? p.matchedClaimRole : null;
-    const isMatchedPoliceClaim = !!p.isMatchedPoliceClaim && !confirmedRole;
-    const isMatchedRoleClaim = !!matchedClaimRole && !confirmedRole;
+    const showMatBadges = !!state.showMatchedClaimBadges;
+    const isMatchedPoliceClaim = showMatBadges && !!p.isMatchedPoliceClaim && !confirmedRole;
+    const isMatchedRoleClaim = showMatBadges && !!matchedClaimRole && !confirmedRole;
     const confirmedLabel = confirmedRole ? formatGuessedRoleLabel(confirmedRole) : '';
     const isTeammate = !isSelf && p.isMafiaTeammate;
     const isCultFollower = !isSelf && p.isCultFollower;
+    const isCultSelf = isSelf && !!state.joinedCult;
+    const isCultMarked = viewerOnCultSideClient() && (
+      (Array.isArray(state.cultMemberIds) && state.cultMemberIds.includes(p.id))
+      || (Array.isArray(state.cultProselytizedIds) && state.cultProselytizedIds.includes(p.id))
+    );
     /** 사망자: 성불·기자 등 공개 확정 또는 맞경/맞직·팀 공개가 없으면 직업 초상·유추 표시 숨김 */
     const deadHasPublicRoleHint = !!(
       confirmedRole
@@ -1559,7 +1668,9 @@ function renderPlayerGrid() {
     const isPdWatch = state.myRole === ROLE.PRIVATE_DETECTIVE && state.myPrivateDetectiveWatchId === p.id;
     const isPdPointed = state.myRole === ROLE.PRIVATE_DETECTIVE && state.myPrivateDetectivePointedId === p.id;
     if (isTeammate) cls += ' mafia-teammate';
-    if (isCultFollower) cls += ' cult-follower';
+    if (isCultFollower || isCultSelf) cls += ' cult-follower';
+    if (isCultMarked) cls += ' cult-marked';
+    if (isCultSelf && state.myRole !== ROLE.CULT_LEADER) cls += ' cult-self';
     if (isPdWatch) cls += ' pd-watch';
     if (isPdPointed) cls += ' pd-pointed';
     if (isMatchedPoliceClaim) cls += ' matched-police';
@@ -1568,7 +1679,10 @@ function renderPlayerGrid() {
     let status = isDead ? '사망' : (p.connected ? '' : '재연결');
     if (isCandidate) status = '처형 후보';
     if (isTeammate) status = status || '팀';
-    if (isCultFollower) status = status || '신도';
+    if (isCultFollower) {
+      status = status || (p.isCultLeaderAlly ? '교주' : '신도');
+    }
+    if (isCultSelf && state.myRole !== ROLE.CULT_LEADER) status = status || '신도';
 
     const teammateRole = isTeammate ? p.role : (isCultFollower ? p.role : null);
     let roleForAvatar = null;
@@ -1593,7 +1707,12 @@ function renderPlayerGrid() {
     if (isTeammate) {
       guessHtml = `<span class="slot-team-badge role-${p.role}" title="마피아 팀">${escapeHtml(p.roleLabel || '팀')}</span>`;
     } else if (isCultFollower) {
-      guessHtml = `<span class="slot-team-badge role-${p.role}" title="교주팀 신도">${escapeHtml(p.roleLabel || '신도')}</span>`;
+      const cultBadge = p.isCultLeaderAlly
+        ? '교주'
+        : `신도 · ${escapeHtml(p.roleLabel || '신도')}`;
+      guessHtml = `<span class="slot-team-badge is-cult role-${p.role}" title="교주팀">${cultBadge}</span>`;
+    } else if (isCultSelf && state.myRole !== ROLE.CULT_LEADER) {
+      guessHtml = '<span class="slot-team-badge is-cult" title="교주에게 포교됨">신도</span>';
     } else if (confirmedLabel) {
       guessHtml = `<button type="button" class="slot-guess-btn is-confirmed role-${confirmedRole}" data-guess-id="${p.id}" title="확정 정보는 유지되며, 개인 직업 유추를 따로 기록할 수 있습니다">${escapeHtml(confirmedLabel)}</button>`;
     } else if (privateGuessLabel) {
@@ -1610,16 +1729,17 @@ function renderPlayerGrid() {
       : '';
 
     const unknownRole = !showRoleImg && !showGuessedPortrait;
-    const avatarCls = `slot-avatar${showRoleImg || showGuessedPortrait ? ' has-img' : ''}${unknownRole ? ' is-unknown-role' : ''}`;
+    const cultAvatarMod = getCultAvatarClassModifier(p, isSelf);
+    const avatarCls = `slot-avatar${showRoleImg || showGuessedPortrait ? ' has-img' : ''}${unknownRole ? ' is-unknown-role' : ''}${cultAvatarMod}`;
     const pdMark = isPdPointed
       ? '<span class="slot-pd-mark is-pointed" title="사립탐정 관찰 결과: 이 플레이어를 지목함">☞</span>'
       : (isPdWatch
         ? '<span class="slot-pd-mark is-watch" title="사립탐정 관찰 대상">👁</span>'
         : '');
-    const claimMark = isMatchedPoliceClaim
+    const claimMark = showMatBadges && isMatchedPoliceClaim
       ? '<span class="slot-claim-mark is-matched-police" title="맞경(경찰 주장 충돌): 아직 확정되지 않았습니다">맞경</span>'
-      : (isMatchedRoleClaim
-        ? `<span class="slot-claim-mark is-matched-role" title="맞직업(직업 주장 충돌): 아직 확정되지 않았습니다">${matchedClaimRole === 'medium' ? '맞영' : matchedClaimRole === 'reporter' ? '맞기' : '맞직업'}</span>`
+      : (showMatBadges && isMatchedRoleClaim
+        ? `<span class="slot-claim-mark is-matched-role" title="맞직업(직업 주장 충돌): 아직 확정되지 않았습니다">${matchedClaimRole === 'police' ? '맞경' : matchedClaimRole === 'medium' ? '맞영' : matchedClaimRole === 'reporter' ? '맞기' : matchedClaimRole === 'doctor' ? '맞의' : matchedClaimRole === 'soldier' ? '맞군' : '맞직'}</span>`
         : '');
 
     return `<div class="${cls}" data-id="${p.id}">` +
@@ -1661,24 +1781,6 @@ function renderPlayerGrid() {
   grid.querySelectorAll('.slot-target-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      // #region agent log
-      if (document.documentElement.classList.contains('is-mobile')) {
-        const r = btn.getBoundingClientRect();
-        fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-          body: JSON.stringify({
-            sessionId: 'a38a8e',
-            hypothesisId: 'H_touch',
-            location: 'app.js:slot-target-btn',
-            message: 'mobile vote target tap',
-            runId: 'mobile-fix',
-            data: { w: Math.round(r.width), h: Math.round(r.height), targetId: btn.dataset.targetId },
-            timestamp: Date.now()
-          })
-        }).catch(() => {});
-      }
-      // #endregion
       onPlayerCardClick(btn.dataset.targetId);
     });
   });
@@ -1788,9 +1890,19 @@ function renderActionPanel() {
       hint.textContent = '기자 취재는 2번째 밤부터 사용할 수 있습니다.';
     }
     if (state.myRole === ROLE.CULT_LEADER) {
-      if (state.cultProselytizeTonight && !state.cultProselytizedSuccess) {
+      const cultTonight = canCultProselytizeTonightClient(state) || !!state.cultProselytizeTonight;
+      if (cultTonight && !state.cultProselytizedSuccess) {
         addConfirmBtn(btns, '포교', () => emitNightAction('cultProselytize'));
-        hint.textContent = '홀수 밤: 대상 선택 후 「포교」. 성공하면 종소리는 밤 중 랜덤 시각에 울립니다. 마피아 실패 시 다른 대상을 고를 수 있습니다.';
+        if (selectedTargetId) {
+          const t = state.players.find((p) => p.id === selectedTargetId);
+          if (t) {
+            hint.textContent = `${t.nickname} 선택됨 — 「포교」를 눌러 확정하세요.`;
+          } else {
+            hint.textContent = '홀수 밤: 대상 선택 후 「포교」. 성공하면 종소리는 밤 중 랜덤 시각에 울립니다. 마피아 실패 시 다른 대상을 고를 수 있습니다.';
+          }
+        } else {
+          hint.textContent = '홀수 밤: 대상 선택 후 「포교」. 성공하면 종소리는 밤 중 랜덤 시각에 울립니다. 마피아 실패 시 다른 대상을 고를 수 있습니다.';
+        }
       } else if ((state.nightIndex || 0) % 2 === 0) {
         hint.textContent = '짝수 밤에는 포교할 수 없습니다. 교주팀 탭으로 신도에게 지시하세요.';
       } else if (state.cultProselytizedSuccess) {
@@ -1806,6 +1918,10 @@ function renderActionPanel() {
     }
     if (state.myRole === ROLE.CLERIC && (state.clericUsed || state.clericResolved)) {
       hint.textContent = state.clericUsed ? '부활 능력을 사용했습니다.' : '이번 밤 부활 대상이 확정되었습니다.';
+    }
+    if (state.myRole === ROLE.CLERIC && state.clericMustExposeCultLeader) {
+      const leaderName = state.clericCultExposeLeaderName || '교주';
+      hint.textContent = `밤에 ${leaderName}님의 포교를 막았습니다. 낮 채팅에서 ${leaderName}님이 교주임을 공표하세요.`;
     }
     if (state.myRole === ROLE.BEAST_MAN && state.beastManCanKill && state.phase === 'night') {
       addConfirmBtn(btns, '처형', () => emitNightAction('beastManKill'));
@@ -1902,7 +2018,7 @@ function emitNightAction(event) {
     policeInvestigate: { anim: 'anim-investigate', cardFx: null },
     reporterScoop: { anim: 'anim-reporter-flash', cardFx: null },
     mediumPurify: { anim: 'anim-investigate', cardFx: null },
-    cultProselytize: { anim: null, cardFx: 'fx-target-cult' },
+    cultProselytize: { anim: 'anim-cult-proselytize', cardFx: 'fx-target-cult' },
     clericRevive: { anim: 'anim-doctor-heal', cardFx: null },
     beastManKill: { anim: 'anim-mafia-kill', cardFx: 'fx-target-kill' },
     terroristMartyr: { anim: 'anim-mafia-kill', cardFx: 'fx-target-kill' }
@@ -1910,6 +2026,7 @@ function emitNightAction(event) {
   const fx = animMap[event];
   if (fx && fx.anim) runAnimation(fx.anim, { targetId: selectedTargetId, cardFx: fx.cardFx });
   if (event === 'cultProselytize') {
+    flashCultProselytizeCard(selectedTargetId);
     showToast('포교 시도 중… 성공 시 종소리는 밤 중 랜덤 시각에 울립니다.');
   }
   if (event === 'mafiaVote') {
@@ -2225,6 +2342,7 @@ socket.on('disconnect', (reason) => {
 
 socket.on('connect_error', () => {
   socketConnected = false;
+  probeServerHealth();
   updateLobbyConnectionUi();
 });
 
@@ -2279,7 +2397,33 @@ socket.on('stateSync', (data) => {
     lastWords: chatStore.lastWords,
     lobby: chatStore.lobby
   };
+  const prevPlayers = state?.players;
   state = data;
+  // #region agent log
+  fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+    body: JSON.stringify({
+      sessionId: 'a38a8e',
+      hypothesisId: 'H_client_sync',
+      location: 'app.js:stateSync',
+      message: 'stateSync received',
+      data: {
+        phase: data.phase,
+        roomCode: data.roomCode,
+        stateError: !!data.stateError,
+        playerCount: data.playerCount
+      },
+      timestamp: Date.now()
+    })
+  }).catch(() => {});
+  // #endregion
+  if (prevPlayers && state.players && data.phase && data.phase !== 'lobby' && data.phase !== 'game_over') {
+    state.players = mergePlayerVisualHints(prevPlayers, state.players);
+  }
+  if (data.mafiaTeamRoster?.length) {
+    applyMafiaTeamRoster(data.mafiaTeamRoster);
+  }
   if (pendingExecutionVote && data.myExecutionVote) {
     const label = data.myExecutionVote === 'yes' ? '찬성' : '반대';
     if (data.myExecutionVote !== pendingExecutionVote) {
@@ -2320,20 +2464,6 @@ socket.on('stateSync', (data) => {
 });
 
 socket.on('phaseChanged', (data) => {
-  // #region agent log
-  fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-    body: JSON.stringify({
-      sessionId: 'a38a8e',
-      hypothesisId: 'ImgPhaseEvt',
-      location: 'public/app.js:phaseChanged',
-      message: 'phaseChanged event',
-      data: { phase: data.phase, nightIndex: data.nightIndex, dayIndex: data.dayIndex },
-      timestamp: Date.now()
-    })
-  }).catch(() => {});
-  // #endregion
   if (data.remainingMs != null) startLocalTimer(data.remainingMs);
   if (state) {
     state.phase = data.phase;
@@ -2341,6 +2471,9 @@ socket.on('phaseChanged', (data) => {
     if (data.dayIndex != null) state.dayIndex = data.dayIndex;
     if (data.remainingMs != null) state.phaseRemainingMs = data.remainingMs;
     if (data.executionCandidateId != null) state.executionCandidateId = data.executionCandidateId;
+    if (data.phase === 'night' && state.myRole === ROLE.CULT_LEADER) {
+      state.cultProselytizeTonight = canCultProselytizeTonightClient(state);
+    }
   }
   if (data.timerAdjust) {
     if (state) renderTimeButtons();
@@ -2412,16 +2545,17 @@ socket.on('animation', (data) => {
 
 socket.on('gameMotion', (data) => {
   if (data && data.type === 'cult_proselytize') {
-    runAnimation('anim-cult-proselytize', { silent: false });
+    runAnimation('anim-cult-proselytize', { silent: false, targetId: data.targetId, cardFx: 'fx-target-cult' });
+    if (data.targetId) flashCultProselytizeCard(data.targetId);
     AudioManager.playSFX('night');
   }
-  if (typeof enqueueMotion === 'function') enqueueMotion(data);
+  if (typeof window.enqueueMotion === 'function') window.enqueueMotion(data);
 });
 
 socket.on('gameMotionBatch', (data) => {
   if (!data || !data.motions) return;
   data.motions.forEach((m) => {
-    if (typeof enqueueMotion === 'function') enqueueMotion(m);
+    if (typeof window.enqueueMotion === 'function') window.enqueueMotion(m);
   });
 });
 
@@ -2461,7 +2595,7 @@ socket.on('privateInfo', (data) => {
   } else if (data.type === 'spy') {
     if (data.joinedMafiaChat && state) {
       state.joinedMafiaChat = true;
-      renderPlayerGrid();
+      if (state.players) renderPlayerGrid();
       renderActionPanel();
       updateChatTabs();
     }
@@ -2481,25 +2615,37 @@ socket.on('privateInfo', (data) => {
       message: `${data.targetName} → ${data.roleLabel} (아침에 전원 공표)`
     });
   } else if (data.type === 'actionConfirm' && data.targetName) {
-    const labels = { mafia: '암살', spy: '조사', police: '조사', doctor: '치료', reporter: '취재', medium: '성불' };
+    const labels = { mafia: '암살', spy: '조사', police: '조사', doctor: '치료', reporter: '취재', medium: '성불', cult: '포교' };
+    if (data.action === 'cult' && data.targetId && state?.players) {
+      flashCultProselytizeCard(data.targetId);
+      renderPlayerGrid();
+    }
     showSkillNotice({
       scope: 'private',
       kind: data.action,
-      title: `${labels[data.action] || '능력'} 대상 지정`,
-      message: data.targetName
+      title: data.action === 'cult' ? '포교 성공' : `${labels[data.action] || '능력'} 대상 지정`,
+      message: data.action === 'cult' && data.roleLabel
+        ? `${data.targetName} → ${data.roleLabel} (교주팀)`
+        : data.targetName
     });
   }
   if (data.type === 'mafiaTeam') {
+    if (!state?.players) return;
+    applyMafiaTeamRoster(data.teammates);
     showMafiaTeamNotice(data.teammates);
     renderPlayerGrid();
     renderActionPanel();
   }
   if (data.type === 'cultTeam') {
+    if (!state?.players) return;
     const leader = data.leaderNickname ? `교주 ${data.leaderNickname}` : '교주';
     const followers = (data.followers || []).map((f) => f.nickname).join(', ');
     showToast(followers ? `교주팀: ${leader} · 신도 ${followers}` : `교주팀: ${leader}`);
     renderPlayerGrid();
     renderActionPanel();
+  }
+  if (data.type === 'cultist_leader') {
+    showToast(data.message || `교주: ${data.leaderNickname || '?'}`);
   }
   if (data.type === 'role' || data.type === 'inherit') {
     if (state) {
@@ -2600,6 +2746,22 @@ $('#btn-create').addEventListener('click', () => {
   const nickname = getNickname();
   if (!nickname) return showToast('닉네임을 입력하세요.');
   localStorage.setItem('mafia_nickname', nickname);
+  sessionStorage.removeItem('mafia_in_room_session');
+  localStorage.removeItem('mafia_roomCode');
+  // #region agent log
+  fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
+    body: JSON.stringify({
+      sessionId: 'a38a8e',
+      hypothesisId: 'H_client_emit',
+      location: 'app.js:btn-create',
+      message: 'emit createRoom',
+      data: { userID, nickname },
+      timestamp: Date.now()
+    })
+  }).catch(() => {});
+  // #endregion
   socket.emit('createRoom', { userID, nickname });
   showToast('방을 만드는 중...');
 });
@@ -2649,10 +2811,12 @@ $('#btn-leave-game')?.addEventListener('click', leaveRoom);
 
 (function applyRoomCodeFromUrl() {
   const params = new URLSearchParams(window.location.search);
-  const room = (params.get('room') || '').trim().toUpperCase();
+  const room = (params.get('room') || '').trim().toUpperCase().slice(0, 4);
   if (room) {
     const input = $('#room-code');
-    if (input) input.value = room.slice(0, 4);
+    if (input) input.value = room;
+    localStorage.setItem('mafia_roomCode', room);
+    sessionStorage.setItem('mafia_in_room_session', '1');
   }
 })();
 
@@ -2722,28 +2886,6 @@ function updateMobileViewport() {
   } else {
     root.style.setProperty('--keyboard-offset', '0px');
   }
-  // #region agent log
-  if (document.documentElement.classList.contains('is-mobile')) {
-    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-      body: JSON.stringify({
-        sessionId: 'a38a8e',
-        hypothesisId: 'H_kb',
-        location: 'app.js:updateMobileViewport',
-        message: 'mobile viewport metrics',
-        runId: 'mobile-fix',
-        data: {
-          appVh: Math.round(h),
-          keyboardOffset: Math.round(kb),
-          innerH: window.innerHeight,
-          orient: screen.orientation?.type || ''
-        },
-        timestamp: Date.now()
-      })
-    }).catch(() => {});
-  }
-  // #endregion
 }
 
 function setupMobileOptimizations() {
@@ -2785,21 +2927,6 @@ function setupMobileOptimizations() {
 
   const onPageVisible = () => {
     if (document.visibilityState !== 'visible') return;
-    // #region agent log
-    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-      body: JSON.stringify({
-        sessionId: 'a38a8e',
-        hypothesisId: 'H_vis',
-        location: 'app.js:onPageVisible',
-        message: 'page visible resume',
-        runId: 'mobile-fix',
-        data: { connected: socket.connected, reconnectPaused },
-        timestamp: Date.now()
-      })
-    }).catch(() => {});
-    // #endregion
     updateMobileViewport();
     if (!reconnectPaused && !socket.connected) {
       socket.connect();
@@ -2811,29 +2938,10 @@ function setupMobileOptimizations() {
   window.addEventListener('pageshow', (ev) => {
     if (ev.persisted) onPageVisible();
   });
-
-  // #region agent log
-  fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-    body: JSON.stringify({
-      sessionId: 'a38a8e',
-      hypothesisId: 'H_init',
-      location: 'app.js:setupMobileOptimizations',
-      message: 'mobile setup complete',
-      runId: 'mobile-fix',
-      data: {
-        isMobile: document.documentElement.classList.contains('is-mobile'),
-        isIos: document.documentElement.classList.contains('is-ios'),
-        hasVisualViewport: !!window.visualViewport
-      },
-      timestamp: Date.now()
-    })
-  }).catch(() => {});
-  // #endregion
 }
 
 setupMobileOptimizations();
+startConnectionWatchers();
 updateLobbyConnectionUi();
 
 function setupChatGuessDelegation() {
@@ -2847,20 +2955,6 @@ function setupChatGuessDelegation() {
     const raw = btn.getAttribute('data-guess-id');
     const pid = raw ? Number(raw) : NaN;
     if (!Number.isFinite(pid)) return;
-    // #region agent log
-    fetch('http://127.0.0.1:7270/ingest/50c123a2-bf7d-4c65-ba87-3da2632b748d', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a38a8e' },
-      body: JSON.stringify({
-        sessionId: 'a38a8e',
-        hypothesisId: 'GuessUi',
-        location: 'public/app.js:setupChatGuessDelegation',
-        message: 'guess avatar click',
-        data: { playerId: pid },
-        timestamp: Date.now()
-      })
-    }).catch(() => {});
-    // #endregion
     openPlayerRolePicker(pid);
   });
 }

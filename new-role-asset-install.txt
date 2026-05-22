@@ -1,0 +1,10 @@
+OK role cleric
+OK role terrorist
+OK role beast_man
+OK role cultist
+OK motion cleric_revive
+OK motion terrorist_martyr
+OK motion terrorist_oxidation
+OK motion beastman_kill
+OK motion beastman_contact
+OK motion cultist_succession
