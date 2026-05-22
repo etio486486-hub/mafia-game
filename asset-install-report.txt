@@ -1,4 +1,4 @@
 roles: 16/16 installed
 all roles have PNG
-motions: 21/21 installed
-all motions have PNG
+motions: 21/22 installed
+missing motions: spy_caught_by_soldier

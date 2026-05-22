@@ -32,6 +32,7 @@ const MOTIONS = [
   { file: 'mafia_kill', label: '살해' },
   { file: 'doctor_heal', label: '치료' },
   { file: 'soldier_block', label: '방탄' },
+  { file: 'spy_caught_by_soldier', label: '스파이 검거' },
   { file: 'police_mafia', label: '마피아 조사' },
   { file: 'police_innocent', label: '무죄 조사' },
   { file: 'spy_contact', label: '스파이 접선' },

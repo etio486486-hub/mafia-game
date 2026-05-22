@@ -1,9 +1,9 @@
 /* Game motion / cutscene system (Mafia42-style) */
-const MOTION_ASSET_VERSION = '9';
+const MOTION_ASSET_VERSION = '10';
 
 const MOTION_TYPES = [
   'vote_execution', 'vote_rejected', 'vote_tie', 'quiet_night', 'mafia_kill',
-  'doctor_heal', 'soldier_block', 'police_mafia', 'police_innocent',
+  'doctor_heal', 'soldier_block', 'spy_caught_by_soldier', 'police_mafia', 'police_innocent',
   'spy_contact', 'spy_investigate', 'madam_silence', 'politician_immunity',
   'reporter_scoop', 'graverobber_inherit', 'cult_proselytize', 'private_detective_search',
   'cleric_revive', 'terrorist_martyr', 'terrorist_oxidation',

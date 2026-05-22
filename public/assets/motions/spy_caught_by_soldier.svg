@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400" width="640" height="400">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f1420"/>
+      <stop offset="100%" stop-color="#1a1028"/>
+    </linearGradient>
+    <radialGradient id="moon" cx="50%" cy="30%" r="45%">
+      <stop offset="0%" stop-color="rgba(232,212,138,0.35)"/>
+      <stop offset="100%" stop-color="rgba(232,212,138,0)"/>
+    </radialGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="640" height="400" fill="url(#bg)"/>
+  <ellipse cx="480" cy="70" rx="90" ry="55" fill="url(#moon)"/>
+  <rect x="0" y="300" width="640" height="100" fill="#0a0c12" opacity="0.6"/>
+
+  <!-- Soldier (right, catching) -->
+  <g transform="translate(380, 95)">
+    <ellipse cx="55" cy="200" rx="70" ry="18" fill="rgba(0,0,0,0.45)"/>
+    <rect x="25" y="95" width="60" height="95" rx="8" fill="#4a5568"/>
+    <rect x="15" y="105" width="22" height="70" rx="6" fill="#3d4a5c" transform="rotate(-18 26 140)"/>
+    <rect x="73" y="100" width="22" height="75" rx="6" fill="#3d4a5c" transform="rotate(28 84 137)"/>
+    <circle cx="55" cy="52" r="32" fill="#5a6b7d"/>
+    <rect x="35" y="38" width="40" height="12" rx="4" fill="#2d3748"/>
+    <path d="M 5 115 Q -15 80 20 55" stroke="#c9a227" stroke-width="6" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+    <text x="55" y="250" text-anchor="middle" fill="#9aa8b8" font-size="14" font-family="serif">px</text>
+  </g>
+
+  <!-- Spy (left, caught) -->
+  <g transform="translate(95, 110)">
+    <ellipse cx="50" cy="185" rx="55" ry="16" fill="rgba(0,0,0,0.5)"/>
+    <rect x="22" y="88" width="52" height="88" rx="7" fill="#3d2a4a"/>
+    <rect x="8" y="98" width="18" height="62" rx="5" fill="#2d1f38" transform="rotate(35 17 129)"/>
+    <circle cx="48" cy="48" r="28" fill="#5c2d6e"/>
+    <ellipse cx="38" cy="44" rx="14" ry="6" fill="#1a1020" opacity="0.7"/>
+    <path d="M 75 95 L 120 75" stroke="#8b6b9e" stroke-width="3" stroke-dasharray="4 3" opacity="0.6"/>
+    <text x="50" y="235" text-anchor="middle" fill="#b08cc4" font-size="14" font-family="serif">¤t</text>
+  </g>
+
+  <!-- Hand clash / catch spark -->
+  <g transform="translate(268, 155)" filter="url(#glow)">
+    <circle cx="0" cy="0" r="28" fill="rgba(201,162,74,0.25)"/>
+    <path d="M -18 -8 L 18 8 M 18 -8 L -18 8" stroke="#e8d48a" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <text x="320" y="355" text-anchor="middle" fill="#e8d48a" font-size="32" font-family="serif" font-weight="bold">¤t €p</text>
+  <text x="320" y="382" text-anchor="middle" fill="#8a7a5a" font-size="16" font-family="serif">$ p¬  ä´</text>
+</svg>

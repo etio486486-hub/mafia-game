@@ -14,7 +14,7 @@ const ROLES = [
 
 const MOTIONS = [
   'vote_execution', 'vote_rejected', 'quiet_night', 'mafia_kill',
-  'doctor_heal', 'soldier_block', 'police_mafia', 'police_innocent',
+  'doctor_heal', 'soldier_block', 'spy_caught_by_soldier', 'police_mafia', 'police_innocent',
   'spy_contact', 'spy_investigate', 'politician_immunity',
   'reporter_scoop', 'graverobber_inherit', 'cult_proselytize', 'private_detective_search',
   'cleric_revive', 'terrorist_martyr', 'terrorist_oxidation',
